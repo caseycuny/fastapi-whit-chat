@@ -1,0 +1,27 @@
+# Whitt Chat Service
+
+FastAPI service for handling chat functionality in the Whitt application.
+
+## Setup
+
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+2. Set environment variables:
+```bash
+OPENAI_API_KEY=your_key
+TEACHER_CHAT_BUDDY_ID=your_assistant_id
+```
+
+3. Run the service:
+```bash
+./start.sh
+```
+
+## API Endpoints
+
+- POST /chat - Continue chat conversation
+- POST /initialize_chat - Initialize new chat thread
+- GET /health - Health check endpoint
