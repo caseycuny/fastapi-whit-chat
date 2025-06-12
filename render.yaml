@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: fastapi-whitt-chat
+    name: fastapi-whit-chat
     env: python
     region: oregon
     plan: free
