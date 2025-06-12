@@ -7,6 +7,8 @@ from typing import Optional, List, Dict, Any
 from fastapi.responses import JSONResponse
 import logging
 import httpx
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
 
 app = FastAPI()
 
@@ -17,6 +19,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+sentry_sdk.init(
+    dsn=os.getenv("SENTRY_DSN"),
+    integrations=[FastApiIntegration()],
+    traces_sample_rate=0.5,
 )
 
 # Pydantic schemas

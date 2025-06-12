@@ -5,7 +5,8 @@ services:
     region: oregon
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
+    healthCheckPath: /health
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: OPENAI_API_KEY
         sync: false
@@ -15,4 +16,22 @@ services:
         value: https://whitai.app
       - key: INTERNAL_API_KEY
         sync: false
+      - key: ELABORATION_TUTOR_ASSISTANT_ID
+        sync: false
+      - key: ELABORATION_TUTOR_SECOND_CALL_ID
+        sync: false
+      - key: ELABORATION_FEEDBACK_CHATTER_ID
+        sync: false
+      - key: LESSON_PLAN_MATERIAL_MAKER_ID
+        sync: false
+      - key: SENTRY_DSN
+        sync: false  
+      - key: ELABORATION_CLASS_TREND_ANALYZER_ID
+        sync: false
+      - key: ELABORATION_ANALYZER_ID
+        sync: false
+      - key: LESSON_PLAN_MAKER_ID
+        sync: false
+      - key: MODEL_SENTENCE_WRITER_ID
+        sync: false    
     autoDeploy: true 
