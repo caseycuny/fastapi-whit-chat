@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: fastapi-whitt-chat
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TEACHER_CHAT_BUDDY_ID
+        sync: false
+      - key: DJANGO_API_BASE
+        value: https://whitai.app
+      - key: INTERNAL_API_KEY
+        sync: false
+    autoDeploy: true 
