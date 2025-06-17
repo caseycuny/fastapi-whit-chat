@@ -349,66 +349,91 @@ async def debate_initialize(input: DebateInitInput):
     Initializes a debate session with the student-selected prompt and stance.
     The assistant takes the opposite stance and starts the debate.
     """
+    import sys
+    import traceback
+
+    print("=== [DEBUG] /debate/initialize called ===")
+    print(f"Input received: prompt={input.prompt!r}, stance={input.stance!r}")
+
     assistant_id = os.getenv("DEBATOR_STUDENT_ID")
+    print(f"Assistant ID from env: {assistant_id!r}")
     if not assistant_id:
+        print("[ERROR] DEBATOR_STUDENT_ID not set in environment.")
         raise HTTPException(status_code=500, detail="DEBATOR_STUDENT_ID not set in environment.")
 
-    # Create a new thread
-    thread = client.beta.threads.create()
-    thread_id = thread.id
+    try:
+        # Create a new thread
+        thread = client.beta.threads.create()
+        thread_id = thread.id
+        print(f"Created thread with ID: {thread_id}")
 
-    # Compose the system message
-    system_message = (
-        f"This is the debate prompt: '{input.prompt}'. The user stance is: '{input.stance}'. "
-        "You MUST take the opposite stance and start with a debate assertion of your position. "
-        "Then the user will reply with their assertion, and you will engage in a meaningful debate to promote critical thinking."
-    )
-
-    # Send the system message to the thread
-    client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=system_message
-    )
-
-    # Create and run the assistant
-    run = client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id
-    )
-
-    # Await completion using asyncio
-    start_time = time.time()
-    timeout = 90
-    while True:
-        run_status = client.beta.threads.runs.retrieve(
-            thread_id=thread_id,
-            run_id=run.id
+        # Compose the system message
+        system_message = (
+            f"This is the debate prompt: '{input.prompt}'. The user stance is: '{input.stance}'. "
+            "You MUST take the opposite stance and start with a debate assertion of your position. "
+            "Then the user will reply with their assertion, and you will engage in a meaningful debate to promote critical thinking."
         )
-        if run_status.status == 'completed':
-            break
-        elif run_status.status in ['failed', 'cancelled', 'expired']:
-            raise HTTPException(status_code=500, detail=f"Run failed with status: {run_status.status}")
-        if time.time() - start_time > timeout:
-            raise HTTPException(status_code=408, detail="Assistant timed out.")
-        await asyncio.sleep(2)
+        print(f"System message: {system_message}")
 
-    # Get the assistant's first message
-    messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
-    assistant_message = None
-    for msg in messages.data:
-        if msg.role == "assistant" and msg.content:
-            assistant_message = msg.content[0].text.value
-            break
-    if not assistant_message:
-        raise HTTPException(status_code=500, detail="No assistant response found.")
+        # Send the system message to the thread
+        client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=system_message
+        )
+        print("System message sent to thread.")
 
-    return DebateInitResponse(
-        thread_id=thread_id,
-        run_id=run.id,
-        status=run_status.status,
-        assistant_message=assistant_message
-    )
+        # Create and run the assistant
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=assistant_id
+        )
+        print(f"Run created with ID: {run.id}")
+
+        # Await completion using asyncio
+        start_time = time.time()
+        timeout = 90
+        while True:
+            run_status = client.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id
+            )
+            print(f"Run status: {run_status.status}")
+            if run_status.status == 'completed':
+                break
+            elif run_status.status in ['failed', 'cancelled', 'expired']:
+                print(f"[ERROR] Run failed with status: {run_status.status}")
+                raise HTTPException(status_code=500, detail=f"Run failed with status: {run_status.status}")
+            if time.time() - start_time > timeout:
+                print("[ERROR] Assistant timed out.")
+                raise HTTPException(status_code=408, detail="Assistant timed out.")
+            await asyncio.sleep(2)
+
+        # Get the assistant's first message
+        messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
+        print(f"Retrieved {len(messages.data)} messages from thread.")
+        assistant_message = None
+        for msg in messages.data:
+            print(f"Message role: {msg.role}, content: {msg.content}")
+            if msg.role == "assistant" and msg.content:
+                assistant_message = msg.content[0].text.value
+                print(f"Assistant message found: {assistant_message!r}")
+                break
+        if not assistant_message:
+            print("[ERROR] No assistant response found.")
+            raise HTTPException(status_code=500, detail="No assistant response found.")
+
+        print("=== [DEBUG] /debate/initialize completed successfully ===")
+        return DebateInitResponse(
+            thread_id=thread_id,
+            run_id=run.id,
+            status=run_status.status,
+            assistant_message=assistant_message
+        )
+    except Exception as e:
+        print("[EXCEPTION] Exception in /debate/initialize:")
+        traceback.print_exc(file=sys.stdout)
+        raise
 
 @app.post("/debate/respond", response_model=DebateChatResponse)
 async def debate_respond(input: DebateChatInput):
