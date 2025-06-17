@@ -21,7 +21,7 @@ load_dotenv()
 app = FastAPI()
 
 # CORS for local dev or frontend calls
-frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:8000".split(","))
+frontend_origins = os.getenv("FRONTEND_ORIGINS", "http://localhost:8000").split(",")
 
 if "http://localhost:8000" not in frontend_origins:
     frontend_origins.append("http://localhost:8000")
