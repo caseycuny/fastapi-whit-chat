@@ -349,23 +349,20 @@ async def debate_initialize(input: DebateInitInput):
     Initializes a debate session with the student-selected prompt and stance.
     The assistant takes the opposite stance and starts the debate.
     """
-    import sys
-    import traceback
-
-    print("=== [DEBUG] /debate/initialize called ===")
-    print(f"Input received: prompt={input.prompt!r}, stance={input.stance!r}")
+    logger.info("=== [DEBUG] /debate/initialize called ===")
+    logger.info(f"Input received: prompt={input.prompt!r}, stance={input.stance!r}")
 
     assistant_id = os.getenv("DEBATOR_STUDENT_ID")
-    print(f"Assistant ID from env: {assistant_id!r}")
+    logger.info(f"Assistant ID from env: {assistant_id!r}")
     if not assistant_id:
-        print("[ERROR] DEBATOR_STUDENT_ID not set in environment.")
+        logger.error("[ERROR] DEBATOR_STUDENT_ID not set in environment.")
         raise HTTPException(status_code=500, detail="DEBATOR_STUDENT_ID not set in environment.")
 
     try:
         # Create a new thread
         thread = client.beta.threads.create()
         thread_id = thread.id
-        print(f"Created thread with ID: {thread_id}")
+        logger.info(f"Created thread with ID: {thread_id}")
 
         # Compose the system message
         system_message = (
@@ -373,7 +370,7 @@ async def debate_initialize(input: DebateInitInput):
             "You MUST take the opposite stance and start with a debate assertion of your position. "
             "Then the user will reply with their assertion, and you will engage in a meaningful debate to promote critical thinking."
         )
-        print(f"System message: {system_message}")
+        logger.info(f"System message: {system_message}")
 
         # Send the system message to the thread
         client.beta.threads.messages.create(
@@ -381,14 +378,14 @@ async def debate_initialize(input: DebateInitInput):
             role="user",
             content=system_message
         )
-        print("System message sent to thread.")
+        logger.info("System message sent to thread.")
 
         # Create and run the assistant
         run = client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=assistant_id
         )
-        print(f"Run created with ID: {run.id}")
+        logger.info(f"Run created with ID: {run.id}")
 
         # Await completion using asyncio
         start_time = time.time()
@@ -398,32 +395,32 @@ async def debate_initialize(input: DebateInitInput):
                 thread_id=thread_id,
                 run_id=run.id
             )
-            print(f"Run status: {run_status.status}")
+            logger.info(f"Run status: {run_status.status}")
             if run_status.status == 'completed':
                 break
             elif run_status.status in ['failed', 'cancelled', 'expired']:
-                print(f"[ERROR] Run failed with status: {run_status.status}")
+                logger.error(f"[ERROR] Run failed with status: {run_status.status}")
                 raise HTTPException(status_code=500, detail=f"Run failed with status: {run_status.status}")
             if time.time() - start_time > timeout:
-                print("[ERROR] Assistant timed out.")
+                logger.error("[ERROR] Assistant timed out.")
                 raise HTTPException(status_code=408, detail="Assistant timed out.")
             await asyncio.sleep(2)
 
         # Get the assistant's first message
         messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
-        print(f"Retrieved {len(messages.data)} messages from thread.")
+        logger.info(f"Retrieved {len(messages.data)} messages from thread.")
         assistant_message = None
         for msg in messages.data:
-            print(f"Message role: {msg.role}, content: {msg.content}")
+            logger.info(f"Message role: {msg.role}, content: {msg.content}")
             if msg.role == "assistant" and msg.content:
                 assistant_message = msg.content[0].text.value
-                print(f"Assistant message found: {assistant_message!r}")
+                logger.info(f"Assistant message found: {assistant_message!r}")
                 break
         if not assistant_message:
-            print("[ERROR] No assistant response found.")
+            logger.error("[ERROR] No assistant response found.")
             raise HTTPException(status_code=500, detail="No assistant response found.")
 
-        print("=== [DEBUG] /debate/initialize completed successfully ===")
+        logger.info("=== [DEBUG] /debate/initialize completed successfully ===")
         return DebateInitResponse(
             thread_id=thread_id,
             run_id=run.id,
@@ -431,8 +428,7 @@ async def debate_initialize(input: DebateInitInput):
             assistant_message=assistant_message
         )
     except Exception as e:
-        print("[EXCEPTION] Exception in /debate/initialize:")
-        traceback.print_exc(file=sys.stdout)
+        logger.error("[EXCEPTION] Exception in /debate/initialize:", exc_info=True)
         raise
 
 @app.post("/debate/respond", response_model=DebateChatResponse)
