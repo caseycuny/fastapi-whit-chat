@@ -207,7 +207,7 @@ async def continue_chat(input: ChatInput):
                 raise HTTPException(status_code=400, detail=f"Run status: {status}")
             elif time.time() - start_time > timeout:
                 raise HTTPException(status_code=408, detail="Assistant timed out.")
-            time.sleep(1)
+            await asyncio.sleep(1)
 
         # Get messages
         messages = client.beta.threads.messages.list(thread_id=input.thread_id, order="asc")
@@ -267,9 +267,32 @@ async def initialize_chat(input: InitChatInput):
             assistant_id=teacher_assistant_id
         )
 
+        # Wait for the initial run to complete
+        timeout = 60
+        start_time = time.time()
+        while True:
+            status = client.beta.threads.runs.retrieve(run.id, thread_id=thread_id).status
+            if status == "completed":
+                break
+            elif status in ["failed", "cancelled"]:
+                raise HTTPException(status_code=400, detail=f"Run status: {status}")
+            elif time.time() - start_time > timeout:
+                raise HTTPException(status_code=408, detail="Assistant timed out.")
+            await asyncio.sleep(1)
+
+        # Get the initial assistant message
+        messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
+        initial_history = [
+            {
+                "role": msg.role,
+                "text": msg.content[0].text.value
+            }
+            for msg in messages.data if msg.role in ["user", "assistant"]
+        ]
+
         return {
             "thread_id": thread_id,
-            "history": []  # Empty history for new thread
+            "history": initial_history
         }
 
     except Exception as e:
@@ -284,12 +307,19 @@ async def get_submission_feedback(assignment_id: int) -> Optional[Dict[str, Any]
         return None
     
     url = f"{DJANGO_API_BASE}/api/submission_feedback/{assignment_id}/"
-    headers = {"X-API-KEY": os.getenv("INTERNAL_API_KEY")}
+    api_key = os.getenv("INTERNAL_API_KEY")
+    headers = {"X-API-KEY": api_key}
+    
+    # Add debug logging
+    logger.info(f"Fetching submission feedback from {url}")
+    logger.info(f"API Key present: {bool(api_key)}")
+    logger.info(f"API Key length: {len(api_key) if api_key else 0}")
     
     try:
         async with httpx.AsyncClient() as client:
-            logger.info(f"Fetching submission feedback from {url}")
             resp = await client.get(url, headers=headers)
+            logger.info(f"Response status: {resp.status_code}")
+            logger.info(f"Response headers: {dict(resp.headers)}")
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as e:
