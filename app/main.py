@@ -276,6 +276,29 @@ async def initialize_chat(input: InitChatInput):
         logger.error(f"Error in initialize_chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def get_submission_feedback(assignment_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetches submission feedback data from the Django API.
+    """
+    if not assignment_id:
+        return None
+    
+    url = f"{DJANGO_API_BASE}/api/submission_feedback/{assignment_id}/"
+    headers = {"X-API-KEY": os.getenv("INTERNAL_API_KEY")}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            logger.info(f"Fetching submission feedback from {url}")
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error fetching submission feedback for assignment {assignment_id}: {e.response.status_code} - {e.response.text}")
+    except Exception as e:
+        logger.error(f"Error fetching submission feedback for assignment {assignment_id}: {str(e)}")
+    
+    return None
+
 # Improve error handling in get_trend_data
 async def get_trend_data(assignment_id: int) -> dict:
     try:
