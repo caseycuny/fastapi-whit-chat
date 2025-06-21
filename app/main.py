@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from openai import OpenAI
 import os, time
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from fastapi.responses import JSONResponse
 import logging
 import httpx
@@ -13,6 +13,18 @@ import json
 from pydantic import ValidationError
 import asyncio
 from dotenv import load_dotenv
+from .schemas import (
+    ElaborationFeedbackResponse,
+    ElaborationSummaryResponse,
+    GenerateArgumentParagraphResponse,
+    ElaborationModelSentencesResponse
+)
+from .utils import extract_json_from_response
+from asgiref.sync import sync_to_async
+import openai
+import traceback
+from datetime import datetime
+from pprint import pprint
 
 
 load_dotenv()
@@ -20,12 +32,18 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS for local dev or frontend calls
-frontend_origins = os.getenv("FRONTEND_ORIGINS", "http://localhost:8000").split(",")
+# Load allowed frontend origins from .env or default
+frontend_origins = os.getenv("FRONTEND_ORIGINS", "").split(",")
 
-if "http://localhost:8000" not in frontend_origins:
-    frontend_origins.append("http://localhost:8000")
+# Add dev URLs for local testing if not already included
+for origin in ["http://localhost:8000", "http://127.0.0.1:8000"]:
+    if origin not in frontend_origins:
+        frontend_origins.append(origin)
 
+# Clean up any empty strings (in case env was empty)
+frontend_origins = [origin.strip() for origin in frontend_origins if origin.strip()]
+
+# Apply middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=frontend_origins,
@@ -39,6 +57,22 @@ sentry_sdk.init(
     integrations=[FastApiIntegration()],
     traces_sample_rate=0.5,
 )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    print(f"Unexpected error: {str(exc)}")
+    print(f"Stack trace:\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": str(exc.detail)}
+    )
 
 # Pydantic schemas
 class ChatInput(BaseModel):
@@ -86,6 +120,47 @@ class DebateChatResponse(BaseModel):
     status: str
     assistant_message: str
 
+class InitializeRequest(BaseModel):
+    topic: str
+    class_id: int
+    user_id: int  # Pass from Django
+
+class FeedbackRequest(BaseModel):
+    thread_id: str
+    user_message: str
+    full_paragraph: str
+    user_id: int
+
+class SaveConversationRequest(BaseModel):
+    topic: str
+    conversation: str
+    class_id: int
+    thread_id: str
+    user_id: int
+    assignment_id: Optional[int] = None
+
+class ElaborationInitRequest(BaseModel):
+    topic: str
+    user_id: int
+    assignment_id: Optional[int] = None
+
+class ElaborationFeedbackRequest(BaseModel):
+    thread_id: str
+    user_message: str
+    full_paragraph: str
+    user_id: int
+
+class ElaborationSummaryRequest(BaseModel):
+    topic: str
+    conversation: str
+    user_id: int
+    assignment_id: Optional[int] = None
+
+class ElaborationModelSentencesRequest(BaseModel):
+    topic: str
+    user_id: int
+    assignment_id: Optional[int] = None
+
 # Add logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -104,6 +179,11 @@ async def continue_chat(input: ChatInput):
             logger.error("OPENAI_API_KEY not set")
             raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set")
 
+        teacher_assistant_id = os.getenv("TEACHER_CHAT_BUDDY_ID")
+        if not teacher_assistant_id:
+            logger.error("TEACHER_CHAT_BUDDY_ID not set")
+            raise HTTPException(status_code=500, detail="TEACHER_CHAT_BUDDY_ID not set")
+
         # Create message
         client.beta.threads.messages.create(
             thread_id=input.thread_id,
@@ -111,10 +191,10 @@ async def continue_chat(input: ChatInput):
             content=input.message
         )
 
-        # Create and monitor run
+        # Create and monitor run with the teacher assistant
         run = client.beta.threads.runs.create(
             thread_id=input.thread_id,
-            assistant_id=input.assistant_id
+            assistant_id=teacher_assistant_id
         )
 
         timeout = 60
@@ -154,15 +234,23 @@ async def initialize_chat(input: InitChatInput):
             logger.error("OPENAI_API_KEY not set")
             raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set")
 
+        teacher_assistant_id = os.getenv("TEACHER_CHAT_BUDDY_ID")
+        if not teacher_assistant_id:
+            logger.error("TEACHER_CHAT_BUDDY_ID not set")
+            raise HTTPException(status_code=500, detail="TEACHER_CHAT_BUDDY_ID not set")
+
         # Create thread
         thread = client.beta.threads.create()
         thread_id = thread.id
         logger.info(f"Created thread with ID: {thread_id}")
 
         if input.assignment_id:
-            # Get trend data from Django API
-            trend_data = await get_trend_data(input.assignment_id)
-            context_text = f"Here is the class trend data:\n{trend_data}"
+            # Get submission feedback from Django API
+            submission_data = await get_submission_feedback(input.assignment_id)
+            if submission_data:
+                context_text = f"Here is the submission feedback data:\n{submission_data}"
+            else:
+                context_text = "No submission feedback available."
         else:
             context_text = "No assignment context available."
 
@@ -170,7 +258,13 @@ async def initialize_chat(input: InitChatInput):
         client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
-            content=f"Using this class trend data, collaborate as a thought partner and assistant with the teacher.\n{context_text}"
+            content=f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}"
+        )
+
+        # Create initial run with the teacher assistant
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=teacher_assistant_id
         )
 
         return {
@@ -490,3 +584,645 @@ async def debate_respond(input: DebateChatInput):
         status=run_status.status,
         assistant_message=assistant_message
     )
+
+async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
+    """Handles the raw OpenAI API call for initialization"""
+    print("\n🚀 STARTING initialize_elaboration_tutor")
+    print(f"📝 Topic: {topic}")
+    
+    try:
+        # Get assistant ID from environment
+        assistant_id = os.getenv("ELABORATION_TUTOR_ASSISTANT_ID")
+        if not assistant_id:
+            print("❌ Assistant ID not found")
+            raise HTTPException(status_code=500, detail="Assistant ID not found in environment variables.")
+        print(f"✅ Using Assistant ID: {assistant_id}")
+
+        # Create thread
+        print("📝 Creating new thread...")
+        thread = await sync_to_async(openai.beta.threads.create)()
+        print(f"✅ Thread created with ID: {thread.id}")
+
+        # Send initial message
+        print("📝 Sending initial message...")
+        prompt = (
+    f"You must now call the function `generate_argument_paragraph` using the topic: \"{topic}\".\n"
+    "Your output must consist **only** of the structured JSON result from the tool function. Do **not** include any additional text, explanation, markdown, or commentary.\n\n"
+    "Follow these output instructions:\n"
+    "- Create a clear, arguable claim on the topic.\n"
+    "- Provide one sentence of supporting evidence with a properly formatted MLA citation.\n"
+    "- Prompt the user to elaborate by writing a full paragraph.\n"
+    "- ALWAYS End with the sample full paragraph that combines the claim and evidence, this way the user can easily begin writing the elaboration.\n"
+    "- Output must match the format below *exactly*.\n\n"
+    "EXAMPLE FORMAT:\n"
+    "{\n"
+    '  "step_1_title": "Step 1: Let\'s Create a Claim",\n'
+    '  "claim": "Social media use among teenagers can negatively impact mental health by increasing anxiety and social comparison.",\n'
+    '  "step_2_title": "Step 2: Supporting Evidence",\n'
+    '  "evidence": "A 2015 study found a strong correlation between frequent Facebook use and increased levels of envy and depression among college students (Tandoc et al. 143).",\n'
+    '  "elaboration_prompt": "Now that we have a strong claim and supporting evidence, let\'s combine these ideas and elaborate to form a complete paragraph. Now it\'s your turn to elaborate...",\n'
+    '  "full_paragraph": "Social media use among teenagers can negatively impact mental health by increasing anxiety and social comparison. This concern is backed by research: \\"A 2015 study found a strong correlation between frequent Facebook use and increased levels of envy and depression among college students (Tandoc et al. 143).\\""\n'
+    "}"
+)
+
+
+        message = await sync_to_async(openai.beta.threads.messages.create)(
+            thread_id=thread.id,
+            role="user",
+            content=prompt
+        )
+        print("✅ Initial message sent")
+
+        # Create run
+        print("🚀 Starting assistant run...")
+        run = await sync_to_async(openai.beta.threads.runs.create)(
+            thread_id=thread.id,
+            assistant_id=assistant_id,
+            tool_choice={
+                "type": "function",
+                "function": {
+                    "name": "generate_argument_paragraph"
+                }
+            }
+        )
+        print(f"✅ Run created with ID: {run.id}")
+
+        # Monitor run status
+        print("⏳ Waiting for completion...")
+        start_time = datetime.now()
+        timeout_seconds = 180
+
+        while True:
+            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+            
+            if run_status.status == 'requires_action':
+                print("🛠️ Processing function call...")
+                tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+                tool_outputs = [{"tool_call_id": tc.id, "output": tc.function.arguments} for tc in tool_calls]
+                
+                run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                    thread_id=thread.id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+            
+            elif run_status.status == 'completed':
+                print("✅ Run completed")
+                break
+            elif run_status.status in ['failed', 'cancelled', 'expired']:
+                print(f"❌ Run {run_status.status}")
+                raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+            
+            if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+                raise HTTPException(status_code=504, detail="Request timed out")
+            
+            await asyncio.sleep(1)  # Non-blocking sleep
+
+        # Get the response
+        print("📝 Retrieving messages...")
+        messages = await sync_to_async(openai.beta.threads.messages.list)(thread_id=thread.id)
+        response = messages.data[0].content[0].text.value
+        
+        # Debug logging
+        print("\n🔍 DEBUG: Raw Response Structure")
+        print("=" * 50)
+        print("Length:", len(response))
+        print("Number of lines:", len(response.split('\n')))
+        print("\n📝 COMPLETE RAW RESPONSE:")
+        print("=" * 50)
+        print(response)
+        print("=" * 50)
+        
+        return response, thread.id
+
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        print(f"Stack trace:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def elaboration_feedback_api(thread_id: str, user_message: str, full_paragraph: str) -> str:
+    """Handles the raw OpenAI API call for feedback"""
+    print("\n🚀 STARTING elaboration_feedback")
+    print(f"📝 User message length: {len(user_message)}")
+    print(f"📝 Full paragraph: {full_paragraph}")
+
+    try:
+        # Get assistant ID from environment
+        assistant_id = os.getenv("ELABORATION_TUTOR_SECOND_CALL_ID")
+        if not assistant_id:
+            raise ValueError("❌ Elaboration Tutor Assistant ID not found in environment variables.")
+
+        # Create a new thread for feedback
+        print("📝 Creating new thread for feedback...")
+        thread = await sync_to_async(openai.beta.threads.create)()
+        print(f"✅ Thread created with ID: {thread.id}")
+
+        # Construct the prompt
+        prompt = (
+            "You are an expert writing tutor. Analyze the student's paragraph, focus your analsis on the text that follows the citation (source), and provide:\n"
+            "- strengths,\n"
+            "- areas for improvement,\n"
+            "- suggestions for elaboration,\n"
+            "- two guiding questions,\n"
+            "- praise and encouragement.\n\n"
+            "You MUST use the exact format of the function output for your response, from elaboration_feedback. At the end, you MUST include the user's full paragraph (as it currently stands) in the full_paragraph field of your JSON output. This is required every time, so the user can easily revise.\n\n"
+            "Your response must look exactly like the function output. You must not return any text outside the function call. The end of your response must end with the full_paragraph and absolutely NOTHING after it.\n\n"
+            "EXAMPLE FORMAT:\n"
+            '''{\n'''
+            '''  "strengths": ["Clear claim", "Good use of evidence"],\n'''
+            '''  "areas_for_improvement": ["Could use more examples", "Needs stronger conclusion"],\n'''
+            '''  "suggestions_for_elaboration": ["Add specific examples", "Explain implications"],\n'''
+            '''  "guiding_questions": ["Can you provide a specific example?", "What are the long-term effects?"],\n'''
+            '''  "praise_and_encouragement": "Your writing shows strong analytical skills. Keep developing your ideas!",\n'''
+            '''  "full_paragraph": "The student's current paragraph text..."\n'''
+            '''}\n\n'''
+            f"Here is the user's current paragraph, and remember to focus your analysis on the text that follows the citation eg: (source):\n{full_paragraph}\n\n"
+            f"Here is the user's full message:\n{user_message}"
+        )
+
+        print("📝 Sending message to thread...")
+        await sync_to_async(openai.beta.threads.messages.create)(
+            thread_id=thread.id,
+            role="user",
+            content=prompt
+        )
+        print("✅ Feedback prompt sent")
+
+        # Start a run with the same assistant
+        print("🚀 Starting assistant run for feedback...")
+        run = await sync_to_async(openai.beta.threads.runs.create)(
+            thread_id=thread.id,
+            assistant_id=assistant_id,
+            tool_choice={
+                "type": "function",
+                "function": {
+                    "name": "elaboration_feedback"
+                }
+            }
+        )
+        print(f"✅ Run created with ID: {run.id}")
+
+        # Wait for completion and handle tool call
+        print("⏳ Waiting for completion or tool call...")
+        start_time = datetime.now()
+        timeout_seconds = 180
+
+        while True:
+            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+            if run_status.status == 'requires_action':
+                print("🛠️ Processing function/tool call...")
+                tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+                tool_outputs = []
+                for tool_call in tool_calls:
+                    if tool_call.function.name == "elaboration_feedback":
+                        tool_outputs.append({
+                            "tool_call_id": tool_call.id,
+                            "output": tool_call.function.arguments
+                        })
+                if tool_outputs:
+                    run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                        thread_id=thread.id,
+                        run_id=run.id,
+                        tool_outputs=tool_outputs
+                    )
+                    continue
+            elif run_status.status == 'completed':
+                print("✅ Run completed")
+                break
+            elif run_status.status in ['failed', 'cancelled', 'expired']:
+                print(f"❌ Run {run_status.status}")
+                raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+            
+            if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+                raise HTTPException(status_code=504, detail="Request timed out")
+            
+            await asyncio.sleep(1)
+
+        # Get the response
+        print("📝 Retrieving feedback messages...")
+        messages = await sync_to_async(openai.beta.threads.messages.list)(thread_id=thread.id)
+        
+        if not messages.data or not messages.data[0].content:
+            raise HTTPException(status_code=500, detail="No assistant message found")
+
+        # Look for tool calls in the assistant's message
+        for msg in messages.data:
+            if msg.role == 'assistant':
+                for content in msg.content:
+                    if content.type == 'tool_calls':
+                        for tool_call in content.tool_calls:
+                            if tool_call.function.name == "elaboration_feedback":
+                                return tool_call.function.arguments  # This is the JSON string
+
+        # Fallback to text if no tool call found (shouldn't happen with tool_choice)
+        response = messages.data[0].content[0].text.value
+
+        # Debug logging
+        print("\n🔍 DEBUG: Raw Feedback Response Structure")
+        print("=" * 50)
+        print("Length:", len(response))
+        print("Number of lines:", len(response.split('\n')))
+        print("\n📝 COMPLETE RAW FEEDBACK RESPONSE:")
+        print("=" * 50)
+        print(response)
+        print("=" * 50)
+
+        return response
+
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        print(f"Stack trace:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def elaboration_summary_api(topic: str, conversation: str) -> str:
+    """Handles the raw OpenAI API call for summary"""
+    print("\n🚀 STARTING elaboration_summary")
+    print(f"📝 Topic: {topic}")
+    print(f"📝 Conversation length: {len(conversation)}")
+
+    try:
+        # Get assistant ID from environment
+        assistant_id = os.getenv("ELABORATION_ANALYZER_ID")
+        if not assistant_id:
+            raise ValueError("❌ Elaboration Tutor Assistant ID not found in environment variables.")
+
+        # Create thread
+        thread = await sync_to_async(openai.beta.threads.create)()
+        print(f"✅ Thread created with ID: {thread.id}")
+
+        # Construct the prompt
+        prompt = f"""
+You are an AI assistant analyzing student elaboration in short writing responses (typically 2–3 sentences). Your goal is to extract structured insights for teachers and students. You MUST use the provided tool 'analyze_student_elaboration' and return ONLY a JSON object matching the following schema:
+
+{{
+  "strict": true,
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "topic",
+    "techniques_used",
+    "ai_responsiveness",
+    "strengths",
+    "areas_for_improvement",
+    "claim_evidence_reasoning",
+    "language_use_and_style",
+    "diction_improvement_suggestion",
+    "suggested_topics"
+  ],
+  "properties": {{
+    "topic": {{"type": "string", "description": "The student's topic."}},
+    "techniques_used": {{"type": "string", "description": "Techniques used in the elaboration."}},
+    "ai_responsiveness": {{"type": "string", "description": "How the student responded to AI guidance."}},
+    "strengths": {{"type": "array", "items": {{"type": "string"}}, "description": "Specific strengths in the elaboration."}},
+    "areas_for_improvement": {{"type": "array", "items": {{"type": "string"}}, "description": "Areas for improvement and growth."}},
+    "claim_evidence_reasoning": {{"type": "string", "description": "Discussion of claim-evidence alignment, reasoning depth, or gaps."}},
+    "language_use_and_style": {{"type": "string", "description": "Rhetorical verbs, connectors, or metacognitive phrases used."}},
+    "diction_improvement_suggestion": {{"type": "object", "properties": {{"word": {{"type": "string"}}, "suggested_alternatives": {{"type": "array", "items": {{"type": "string"}}}}}}, "required": ["word", "suggested_alternatives"], "description": "A word or two that could be improved for precision or connotation, with suggested alternatives."}},
+    "suggested_topics": {{"type": "array", "items": {{"type": "string"}}, "description": "Three or four topics similar to the student's topic."}}
+  }}
+}}
+
+- If a field is not applicable or no information is available, set it to null (for strings/objects) or an empty array (for lists).
+- Do NOT return markdown, text, or any other format—ONLY the JSON object.
+- You MUST call the tool 'analyze_student_elaboration'.
+
+The student's topic is: {topic}
+
+Here is the conversation:
+{conversation}
+"""
+        # Send message
+        print("📝 Sending message...")
+        await sync_to_async(openai.beta.threads.messages.create)(
+            thread_id=thread.id,
+            role="user",
+            content=prompt
+        )
+        print("✅ Summary prompt sent")
+
+        # Start a run with the same assistant
+        print("🚀 Starting assistant run for summary...")
+        run = await sync_to_async(openai.beta.threads.runs.create)(
+            thread_id=thread.id,
+            assistant_id=assistant_id,
+            tool_choice={
+                "type": "function",
+                "function": {
+                    "name": "analyze_student_elaboration"
+                }
+            }
+        )
+        print(f"✅ Run created with ID: {run.id}")
+
+        # Monitor run status
+        print("⏳ Waiting for completion...")
+        start_time = datetime.now()
+        timeout_seconds = 180
+
+        while True:
+            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+            
+            if run_status.status == 'requires_action':
+                print("🛠️ Processing function call...")
+                tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+                
+                tool_outputs = []
+                for tool_call in tool_calls:
+                    if tool_call.function.name == "analyze_student_elaboration":
+                        tool_outputs.append({
+                            "tool_call_id": tool_call.id,
+                            "output": tool_call.function.arguments
+                        })
+                
+                if tool_outputs:
+                    run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                        thread_id=thread.id,
+                        run_id=run.id,
+                        tool_outputs=tool_outputs
+                    )
+                    continue
+            
+            elif run_status.status == 'completed':
+                print("✅ Run completed")
+                break
+            elif run_status.status in ['failed', 'cancelled', 'expired']:
+                print(f"❌ Run {run_status.status}")
+                raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+            
+            if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+                raise HTTPException(status_code=504, detail="Request timed out")
+            
+            await asyncio.sleep(1)  # Non-blocking sleep
+
+        # Get the response
+        print("📝 Retrieving messages...")
+        messages = await sync_to_async(openai.beta.threads.messages.list)(thread_id=thread.id)
+        response = messages.data[0].content[0].text.value
+        
+        # Debug logging
+        print("\n🔍 DEBUG: Raw Response Structure")
+        print("=" * 50)
+        print("Length:", len(response))
+        print("Number of lines:", len(response.split('\n')))
+        print("\n📝 COMPLETE RAW RESPONSE:")
+        print("=" * 50)
+        print(response)
+        print("=" * 50)
+        
+        return response
+
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        print(f"Stack trace:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def elaboration_model_sentences_api(topic: str) -> str:
+    """Handles the raw OpenAI API call for model sentences based on the provided tool schema."""
+    print("\n🚀 STARTING elaboration_model_sentences")
+    print(f"📝 Topic: {topic}")
+
+    try:
+        assistant_id = os.getenv("MODEL_SENTENCE_WRITER_ID")
+        if not assistant_id:
+            raise ValueError("❌ MODEL_SENTENCE_WRITER_ID not found in environment variables.")
+
+        thread = await sync_to_async(openai.beta.threads.create)()
+        print(f"✅ Thread created with ID: {thread.id}")
+
+        prompt = (
+            "You are an expert writing tutor. Your task is to generate model sentences that demonstrate different elaboration techniques.\n\n"
+            f"Topic: {topic}\n\n"
+            "Generate a model sentence for each of the following elaboration techniques. Each sentence should:\n"
+            "1. Be clear and concise\n"
+            "2. Effectively demonstrate the technique\n"
+            "3. Be relevant to the topic\n"
+            "4. Be suitable for student learning\n\n"
+            "You MUST use the provided tool 'generate_model_sentences' and return ONLY a JSON object with technique names as keys and model sentences as values.\n\n"
+            "EXAMPLE FORMAT:\n"
+            '''{\n'''
+            '''  "Cause and Effect Reasoning": "The invention of the smartphone has revolutionized communication by enabling instant global connectivity.",\n'''
+            '''  "If-Then Statements": "If we continue to ignore climate change, then future generations will face severe environmental challenges.",\n'''
+            '''  "Definition and Clarification": "Artificial intelligence, the simulation of human intelligence by machines, is transforming various industries.",\n'''
+            '''  "Comparisons and Contrasts": "Unlike traditional classrooms, online learning offers flexibility but requires greater self-discipline.",\n'''
+            '''  "Analogies and Metaphors": "The human brain is like a supercomputer, processing countless pieces of information simultaneously.",\n'''
+            '''  "Rhetorical Questions": "How can we expect students to succeed when they lack access to basic educational resources?",\n'''
+            '''  "Explaining Implications": "The rise of social media has profound implications for mental health and social interaction.",\n'''
+            '''  "Explaining the Why or How": "Electric cars reduce emissions by eliminating the need for fossil fuels in transportation.",\n'''
+            '''  "Hypothetical Examples or Situations": "Imagine a world where renewable energy powers every home and business."\n'''
+            '''}'''
+        )
+        
+        await sync_to_async(openai.beta.threads.messages.create)(
+            thread_id=thread.id,
+            role="user",
+            content=prompt
+        )
+        
+        run = await sync_to_async(openai.beta.threads.runs.create)(
+            thread_id=thread.id,
+            assistant_id=assistant_id,
+            tool_choice={"type": "function", "function": {"name": "generate_model_sentences"}}
+        )
+
+        start_time = datetime.now()
+        timeout_seconds = 180
+        tool_response_json = None  # 🆕 storage
+
+        while True:
+            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+                thread_id=thread.id, run_id=run.id
+            )
+
+            if run_status.status == 'requires_action':
+                tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+                tool_outputs = []
+
+                for tc in tool_calls:
+                    tool_response_json = tc.function.arguments  # 🧠 Store it right here
+                    tool_outputs.append({
+                        "tool_call_id": tc.id,
+                        "output": tool_response_json
+                    })
+
+                run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                    thread_id=thread.id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+
+            elif run_status.status == 'completed':
+                if tool_response_json:
+                    return tool_response_json  # ✅ Return it here
+                else:
+                    raise HTTPException(status_code=500, detail="Tool output was not captured.")
+
+            elif run_status.status in ['failed', 'cancelled', 'expired']:
+                raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+
+            if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+                raise HTTPException(status_code=504, detail="Request timed out")
+
+            await asyncio.sleep(1)
+
+    except Exception as e:
+        print(f"❌ Error in elaboration_model_sentences_api: {str(e)}")
+        print(f"Stack trace:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/elaboration/initialize")
+async def get_validated_elaboration_tutor_response(request: ElaborationInitRequest) -> Dict[str, Any]:
+    """Initialize elaboration tutor conversation with validation and retries."""
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response, thread_id = await initialize_elaboration_tutor_api(request.topic)
+            
+            # Try to extract JSON from the response string
+            if isinstance(response, str):
+                try:
+                    json_str = extract_json_from_response(response)
+                    data = json.loads(json_str)
+                except Exception:
+                    # Fallback: try to parse as direct JSON
+                    json_str = response
+                    data = json.loads(response)
+            else:
+                data = response
+                json_str = json.dumps(response)
+            
+            # Validate with Pydantic
+            validated = GenerateArgumentParagraphResponse(**data)
+            return {
+                "response": json.loads(json_str),
+                "thread_id": thread_id
+            }
+            
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            print(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid elaboration tutor response after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(1)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+@app.post("/api/elaboration/feedback")
+async def get_validated_elaboration_feedback_response(request: ElaborationFeedbackRequest) -> Dict[str, Any]:
+    """Get feedback on elaboration with validation and retries."""
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = await elaboration_feedback_api(
+                request.thread_id,
+                request.user_message,
+                request.full_paragraph
+            )
+            
+            # Try to extract JSON from the response string
+            if isinstance(response, str):
+                try:
+                    json_str = extract_json_from_response(response)
+                    data = json.loads(json_str)
+                except Exception:
+                    # Fallback: try to parse as direct JSON
+                    json_str = response
+                    data = json.loads(response)
+            else:
+                data = response
+                json_str = json.dumps(response)
+            
+            # Validate with Pydantic
+            validated = ElaborationFeedbackResponse(**data)
+            return {"response": json.loads(json_str)}
+            
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            print(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid elaboration feedback response after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(1)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+@app.post("/api/elaboration/summary")
+async def get_validated_elaboration_summary(request: ElaborationSummaryRequest) -> Dict[str, Any]:
+    """Get summary of elaboration conversation with validation and retries."""
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = await elaboration_summary_api(
+                request.topic,
+                request.conversation
+            )
+            
+            # Try to extract JSON from the response string
+            if isinstance(response, str):
+                try:
+                    json_str = extract_json_from_response(response)
+                    data = json.loads(json_str)
+                except Exception:
+                    # Fallback: try to parse as direct JSON
+                    json_str = response
+                    data = json.loads(response)
+            else:
+                data = response
+                json_str = json.dumps(response)
+            
+            # Validate with Pydantic
+            validated = ElaborationSummaryResponse(**data)
+            return {"response": json.loads(json_str)}
+            
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            print(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid elaboration summary response after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(1)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+@app.post("/api/elaboration/model-sentences")
+async def get_validated_elaboration_model_sentences(request: ElaborationModelSentencesRequest) -> Dict[str, Any]:
+    """Get model sentences for elaboration with validation and retries."""
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response_str = await elaboration_model_sentences_api(request.topic)
+            
+            # The response is a JSON string representing the arguments of the tool call.
+            # It should contain a 'techniques' object.
+            data = json.loads(response_str)
+            
+            # Validate with Pydantic
+            validated = ElaborationModelSentencesResponse(**data)
+            return {"response": validated.techniques}
+            
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            print(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid model sentences response after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(1)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
