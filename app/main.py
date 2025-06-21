@@ -302,31 +302,46 @@ async def initialize_chat(input: InitChatInput):
 async def get_submission_feedback(assignment_id: int) -> Optional[Dict[str, Any]]:
     """
     Fetches submission feedback data from the Django API.
+    Logs detailed diagnostics for debugging in production.
     """
     if not assignment_id:
+        logger.warning("No assignment_id provided to get_submission_feedback.")
         return None
-    
+
     url = f"{DJANGO_API_BASE}/api/submission_feedback/{assignment_id}/"
     api_key = os.getenv("INTERNAL_API_KEY")
     headers = {"X-API-KEY": api_key}
-    
-    # Add debug logging
-    logger.info(f"Fetching submission feedback from {url}")
-    logger.info(f"API Key present: {bool(api_key)}")
-    logger.info(f"API Key length: {len(api_key) if api_key else 0}")
+
+    logger.info(f"📡 Starting fetch for submission feedback.")
+    logger.info(f"➡️ URL: {url}")
+    logger.info(f"🔐 API Key present: {bool(api_key)}, Length: {len(api_key) if api_key else 'None'}")
     
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers)
-            logger.info(f"Response status: {resp.status_code}")
-            logger.info(f"Response headers: {dict(resp.headers)}")
-            resp.raise_for_status()
-            return resp.json()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers)
+            logger.info(f"✅ HTTP status received: {response.status_code}")
+            response.raise_for_status()
+            
+            data = response.json()
+            logger.debug(f"📦 Response JSON for assignment {assignment_id}: {data}")
+            return data
+
     except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error fetching submission feedback for assignment {assignment_id}: {e.response.status_code} - {e.response.text}")
+        logger.error(
+            f"❌ HTTPStatusError for assignment {assignment_id}: {e.response.status_code} - {e.response.text}",
+            exc_info=True
+        )
+    except httpx.RequestError as e:
+        logger.error(
+            f"❌ RequestError while fetching submission feedback for assignment {assignment_id}: {type(e).__name__} - {e}",
+            exc_info=True
+        )
     except Exception as e:
-        logger.error(f"Error fetching submission feedback for assignment {assignment_id}: {str(e)}")
-    
+        logger.critical(
+            f"🔥 Unexpected error in get_submission_feedback for assignment {assignment_id}: {type(e).__name__} - {str(e)}",
+            exc_info=True
+        )
+
     return None
 
 # Improve error handling in get_trend_data
