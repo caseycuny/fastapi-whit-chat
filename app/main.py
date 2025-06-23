@@ -317,7 +317,7 @@ async def get_submission_feedback(assignment_id: int) -> Optional[Dict[str, Any]
     logger.info(f"🔐 API Key present: {bool(api_key)}, Length: {len(api_key) if api_key else 'None'}")
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(url, headers=headers)
             logger.info(f"✅ HTTP status received: {response.status_code}")
             response.raise_for_status()
