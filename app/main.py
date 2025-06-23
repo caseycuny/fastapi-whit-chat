@@ -308,7 +308,7 @@ async def get_submission_feedback(assignment_id: int) -> Optional[Dict[str, Any]
         logger.warning("No assignment_id provided to get_submission_feedback.")
         return None
 
-    url = f"{DJANGO_API_BASE}/api/submission_feedback/{assignment_id}/"
+    url = f"{DJANGO_API_BASE}/api/submission_focus/{assignment_id}/"
     api_key = os.getenv("INTERNAL_API_KEY")
     headers = {"X-API-KEY": api_key}
 
