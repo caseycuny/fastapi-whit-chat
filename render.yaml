@@ -13,7 +13,7 @@ services:
       - key: TEACHER_CHAT_BUDDY_ID
         sync: false
       - key: DJANGO_API_BASE
-        value: https://whitai.app
+        value: http://whit:10000
       - key: INTERNAL_API_KEY
         sync: false
       - key: ELABORATION_TUTOR_ASSISTANT_ID

@@ -333,9 +333,12 @@ async def get_submission_feedback(assignment_id: int) -> Optional[Dict[str, Any]
     logger.info(f"🔐 API Key present: {bool(api_key)}, Length: {len(api_key) if api_key else 'None'}")
     
     try:
+        t0 = time.time()
         async with httpx.AsyncClient(timeout=60.0) as client:
+            logger.info("About to send GET request to Django API")
             response = await client.get(url, headers=headers)
-            logger.info(f"✅ HTTP status received: {response.status_code}")
+            t1 = time.time()
+            logger.info(f"✅ HTTP status received: {response.status_code} in {t1 - t0:.2f}s")
             response.raise_for_status()
             
             data = response.json()
