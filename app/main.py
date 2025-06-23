@@ -229,6 +229,7 @@ async def continue_chat(input: ChatInput):
 async def initialize_chat(input: InitChatInput):
     try:
         logger.info(f"Initializing chat with input: {input}")
+        total_start = time.time()
         
         if not os.getenv("OPENAI_API_KEY"):
             logger.error("OPENAI_API_KEY not set")
@@ -240,48 +241,61 @@ async def initialize_chat(input: InitChatInput):
             raise HTTPException(status_code=500, detail="TEACHER_CHAT_BUDDY_ID not set")
 
         # Create thread
+        t0 = time.time()
         thread = client.beta.threads.create()
         thread_id = thread.id
-        logger.info(f"Created thread with ID: {thread_id}")
+        logger.info(f"Created thread with ID: {thread_id} in {time.time() - t0:.2f}s")
 
+        # Fetch submission feedback
+        t1 = time.time()
         if input.assignment_id:
-            # Get submission feedback from Django API
             submission_data = await get_submission_feedback(input.assignment_id)
+            logger.info(f"Fetched submission feedback in {time.time() - t1:.2f}s")
             if submission_data:
                 context_text = f"Here is the submission feedback data:\n{submission_data}"
             else:
                 context_text = "No submission feedback available."
         else:
             context_text = "No assignment context available."
-
-        # Initialize thread with context
+        
+        # Add message to thread
+        t2 = time.time()
         client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}"
         )
+        logger.info(f"Added message to thread in {time.time() - t2:.2f}s")
 
         # Create initial run with the teacher assistant
+        t3 = time.time()
         run = client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=teacher_assistant_id
         )
+        logger.info(f"Created run in {time.time() - t3:.2f}s")
 
         # Wait for the initial run to complete
         timeout = 60
         start_time = time.time()
+        logger.info("Polling OpenAI run for completion...")
         while True:
             status = client.beta.threads.runs.retrieve(run.id, thread_id=thread_id).status
             if status == "completed":
                 break
             elif status in ["failed", "cancelled"]:
+                logger.error(f"Run status: {status}")
                 raise HTTPException(status_code=400, detail=f"Run status: {status}")
             elif time.time() - start_time > timeout:
+                logger.error("Assistant timed out.")
                 raise HTTPException(status_code=408, detail="Assistant timed out.")
             await asyncio.sleep(1)
+        logger.info(f"OpenAI run completed in {time.time() - start_time:.2f}s")
 
         # Get the initial assistant message
+        t4 = time.time()
         messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
+        logger.info(f"Fetched messages in {time.time() - t4:.2f}s")
         initial_history = [
             {
                 "role": msg.role,
@@ -289,6 +303,8 @@ async def initialize_chat(input: InitChatInput):
             }
             for msg in messages.data if msg.role in ["user", "assistant"]
         ]
+
+        logger.info(f"Total /initialize_chat time: {time.time() - total_start:.2f}s")
 
         return {
             "thread_id": thread_id,
