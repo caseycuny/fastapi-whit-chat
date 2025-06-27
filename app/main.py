@@ -668,7 +668,7 @@ async def debate_initialize(input: DebateInitInput):
 
     try:
         # Create a new thread
-        thread = client.beta.threads.create()
+        thread = await client.beta.threads.create()
         thread_id = thread.id
         logger.info(f"Created thread with ID: {thread_id}")
 
@@ -681,7 +681,7 @@ async def debate_initialize(input: DebateInitInput):
         logger.info(f"System message: {system_message}")
 
         # Send the system message to the thread
-        client.beta.threads.messages.create(
+        await client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=system_message
@@ -689,7 +689,7 @@ async def debate_initialize(input: DebateInitInput):
         logger.info("System message sent to thread.")
 
         # Create and run the assistant
-        run = client.beta.threads.runs.create(
+        run = await client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=assistant_id
         )
@@ -699,7 +699,7 @@ async def debate_initialize(input: DebateInitInput):
         start_time = time.time()
         timeout = 90
         while True:
-            run_status = client.beta.threads.runs.retrieve(
+            run_status = await client.beta.threads.runs.retrieve(
                 thread_id=thread_id,
                 run_id=run.id
             )
@@ -715,7 +715,7 @@ async def debate_initialize(input: DebateInitInput):
             await asyncio.sleep(2)
 
         # Get the assistant's first message
-        messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
+        messages = await client.beta.threads.messages.list(thread_id=thread_id, order="asc")
         logger.info(f"Retrieved {len(messages.data)} messages from thread.")
         assistant_message = None
         for msg in messages.data:
@@ -750,14 +750,14 @@ async def debate_respond(input: DebateChatInput):
         raise HTTPException(status_code=500, detail="DEBATOR_STUDENT_ID not set in environment.")
 
     # Post the student's message to the thread
-    client.beta.threads.messages.create(
+    await client.beta.threads.messages.create(
         thread_id=input.thread_id,
         role="user",
         content=input.message
     )
 
     # Create and run the assistant
-    run = client.beta.threads.runs.create(
+    run = await client.beta.threads.runs.create(
         thread_id=input.thread_id,
         assistant_id=assistant_id
     )
@@ -766,7 +766,7 @@ async def debate_respond(input: DebateChatInput):
     start_time = time.time()
     timeout = 90
     while True:
-        run_status = client.beta.threads.runs.retrieve(
+        run_status = await client.beta.threads.runs.retrieve(
             thread_id=input.thread_id,
             run_id=run.id
         )
@@ -779,7 +779,7 @@ async def debate_respond(input: DebateChatInput):
         await asyncio.sleep(2)
 
     # Get the assistant's reply
-    messages = client.beta.threads.messages.list(thread_id=input.thread_id, order="desc")
+    messages = await client.beta.threads.messages.list(thread_id=input.thread_id, order="desc")
     assistant_message = None
     for msg in messages.data:
         if msg.role == "assistant" and msg.content:
