@@ -8,4 +8,5 @@ python-multipart==0.0.7
 aiohttp==3.9.1
 sentry-sdk[fastapi]>=2.29.1
 asgiref>=3.5.2
-
+sqlalchemy
+psycopg2-binary

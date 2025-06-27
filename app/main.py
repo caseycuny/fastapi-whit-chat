@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 import os, time
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Any, Tuple
@@ -25,10 +25,20 @@ import openai
 import traceback
 from datetime import datetime
 from pprint import pprint
+from sqlalchemy.orm import Session
+from .db import SessionLocal, Base, engine
+from sqlalchemy.orm import selectinload
+from .models import Submission, FeedbackCategory, NextInstructionalFocus, InstructionalBlindSpot, WritingPersona, CustomUser
+import random, re
+from collections import defaultdict
+from sqlalchemy import text
+from starlette.websockets import WebSocketState
+import anyio
 
 
 load_dotenv()
 
+print("DEBUG: FastAPI DATABASE_URL =", os.getenv("DATABASE_URL"))
 
 app = FastAPI()
 
@@ -58,6 +68,9 @@ sentry_sdk.init(
     traces_sample_rate=0.5,
 )
 
+# Create all tables if they don't exist (for local dev only)
+Base.metadata.create_all(bind=engine)
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     print(f"Unexpected error: {str(exc)}")
@@ -84,6 +97,7 @@ class ChatInput(BaseModel):
 class InitChatInput(BaseModel):
     assignment_id: Optional[int] = None
     assistant_id: str
+    message: Optional[str] = None
 
 class TrendData(BaseModel):
     rubric_averages: Dict[str, Any]
@@ -166,9 +180,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 DJANGO_API_BASE = os.getenv("DJANGO_API_BASE", "http://localhost:8000")
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.get("/test-db")
+def test_db(db: Session = Depends(get_db)):
+    # Just a test endpoint to check DB connection
+    result = db.execute("SELECT 1").fetchone()
+    return {"result": result[0]}
 
 @app.post("/chat")
 async def continue_chat(input: ChatInput):
@@ -225,48 +252,148 @@ async def continue_chat(input: ChatInput):
         logger.error(f"Error in continue_chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def get_submission_focus_data(assignment_id: int, db: Session) -> dict:
+    t0 = time.time()
+    logger.info(f"Fetching submission focus data for assignment {assignment_id}")
+    print(f"DEBUG: Fetching submission focus data for assignment {assignment_id}")
+    submissions = db.query(Submission).filter(Submission.assignment_id == assignment_id).options(
+        selectinload(Submission.student)
+    ).all()
+    logger.info(f"Found {len(submissions)} submissions for assignment {assignment_id}")
+    print(f"DEBUG: Found {len(submissions)} submissions for assignment {assignment_id}")
+    data = []
+    for sub in submissions:
+        # Blind spots
+        blindspots = [row.blind_spot for row in db.query(InstructionalBlindSpot).filter_by(submission_id=sub.id)]
+        # Next steps
+        next_steps = [row.focus for row in db.query(NextInstructionalFocus).filter_by(submission_id=sub.id)]
+        # Feedback categories
+        areas_qs = db.query(FeedbackCategory).filter_by(submission_id=sub.id).all()
+        areas = []
+        strengths = []
+        rubric_scores = {}
+        for cat in areas_qs:
+            # Areas for improvement
+            val = cat.areas_for_improvement
+            if val:
+                if not isinstance(val, list):
+                    try:
+                        val = eval(val) if isinstance(val, str) else [str(val)]
+                    except Exception:
+                        val = [str(val)]
+                if isinstance(val, list):
+                    areas.extend(val)
+            # Strengths
+            sval = cat.strengths
+            if sval:
+                if not isinstance(sval, list):
+                    try:
+                        sval = eval(sval) if isinstance(sval, str) else [str(sval)]
+                    except Exception:
+                        sval = [str(sval)]
+                if isinstance(sval, list):
+                    strengths.extend(sval)
+            # Rubric scores
+            rubric_scores[cat.name] = cat.score
+        # Writing persona
+        persona = None
+        try:
+            persona_obj = db.query(WritingPersona).filter_by(submission_id=sub.id).first()
+            if persona_obj:
+                persona = persona_obj.type
+        except Exception:
+            persona = None
+        # Pick two random items if possible, else the whole list
+        def pick_two_random(lst):
+            return random.sample(lst, 2) if len(lst) > 2 else lst
+        data.append({
+            "student": {
+                "first_name": sub.student.first_name if sub.student else None,
+                "last_name": sub.student.last_name if sub.student else None,
+            },
+            "rubric_scores": rubric_scores,
+            "areas_for_improvement": pick_two_random(areas),
+            "strengths": pick_two_random(strengths),
+            "next_instructional_focus": next_steps,
+            "instructional_blind_spots": blindspots,
+            "writing_persona": persona
+        })
+    logger.info(f"submission_focus raw data: {data}")
+    print(f"DEBUG: submission_focus raw data: {data}")
+    # Summarize instructional focus
+    def summarize_instructional_focus(student_data):
+        focus_keywords = {
+            "transitions": ["transition", "flow", "cohesion"],
+            "thesis": ["thesis", "claim", "main idea"],
+            "evidence": ["evidence", "support", "example", "cite", "citation"],
+            "elaboration": ["elaboration", "explain", "analysis", "commentary", "develop"],
+            "conciseness": ["concise", "clarity", "wordy", "clarify", "repetitive"],
+            "grammar": ["grammar", "comma", "syntax", "fragment", "run-on", "mechanics"],
+            "structure": ["structure", "organization", "outline", "paragraphing"],
+            "style": ["tone", "style", "voice", "diction", "formal"],
+        }
+        counts = defaultdict(int)
+        for student in student_data:
+            combined_text = " ".join(student.get("next_instructional_focus", []) + student.get("instructional_blind_spots", []))
+            combined_text = combined_text.lower()
+            for tag, keywords in focus_keywords.items():
+                if any(re.search(rf"\\b{kw}\\b", combined_text) for kw in keywords):
+                    counts[tag] += 1
+        return dict(sorted(counts.items(), key=lambda item: item[1], reverse=True))
+    metrics_summary = summarize_instructional_focus(data)
+    logger.info(f"metrics_summary: {metrics_summary}")
+    print(f"DEBUG: metrics_summary: {metrics_summary}")
+    logger.info(f"Fetched submission focus data in {time.time() - t0:.2f}s")
+    print(f"DEBUG: Fetched submission focus data in {time.time() - t0:.2f}s")
+    return {
+        "assignment_id": assignment_id,
+        "metrics_summary": metrics_summary,
+        "students": data
+    }
+
 @app.post("/initialize_chat")
-async def initialize_chat(input: InitChatInput):
+async def initialize_chat(input: InitChatInput, db: Session = Depends(get_db)):
     try:
         logger.info(f"Initializing chat with input: {input}")
         total_start = time.time()
-        
         if not os.getenv("OPENAI_API_KEY"):
             logger.error("OPENAI_API_KEY not set")
             raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set")
-
         teacher_assistant_id = os.getenv("TEACHER_CHAT_BUDDY_ID")
         if not teacher_assistant_id:
             logger.error("TEACHER_CHAT_BUDDY_ID not set")
             raise HTTPException(status_code=500, detail="TEACHER_CHAT_BUDDY_ID not set")
-
         # Create thread
         t0 = time.time()
         thread = client.beta.threads.create()
         thread_id = thread.id
         logger.info(f"Created thread with ID: {thread_id} in {time.time() - t0:.2f}s")
-
-        # Fetch submission feedback
+        # Fetch submission feedback from DB
         t1 = time.time()
         if input.assignment_id:
-            submission_data = await get_submission_feedback(input.assignment_id)
+            submission_data = await get_submission_focus_data(input.assignment_id, db)
             logger.info(f"Fetched submission feedback in {time.time() - t1:.2f}s")
             if submission_data:
-                context_text = f"Here is the submission feedback data:\n{submission_data}"
+                context_text = (
+                    f"Here is the metrics summary for the assignment:\n{submission_data['metrics_summary']}\n\n"
+                    f"Here is the submission feedback data for all students:\n{submission_data['students']}"
+                )
             else:
                 context_text = "No submission feedback available."
         else:
             context_text = "No assignment context available."
-        
-        # Add message to thread
-        t2 = time.time()
+        # Combine context and user's question into a single user message
+        if input.message:
+            combined_message = f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}\n\n{input.message}"
+        else:
+            combined_message = f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}"
+        # Add the combined message as the first user message
         client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
-            content=f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}"
+            content=combined_message
         )
-        logger.info(f"Added message to thread in {time.time() - t2:.2f}s")
-
+        logger.info("Added combined user/context message to thread.")
         # Create initial run with the teacher assistant
         t3 = time.time()
         run = client.beta.threads.runs.create(
@@ -274,7 +401,6 @@ async def initialize_chat(input: InitChatInput):
             assistant_id=teacher_assistant_id
         )
         logger.info(f"Created run in {time.time() - t3:.2f}s")
-
         # Wait for the initial run to complete
         timeout = 60
         start_time = time.time()
@@ -291,26 +417,23 @@ async def initialize_chat(input: InitChatInput):
                 raise HTTPException(status_code=408, detail="Assistant timed out.")
             await asyncio.sleep(1)
         logger.info(f"OpenAI run completed in {time.time() - start_time:.2f}s")
-
         # Get the initial assistant message
         t4 = time.time()
         messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
         logger.info(f"Fetched messages in {time.time() - t4:.2f}s")
-        initial_history = [
-            {
-                "role": msg.role,
-                "text": msg.content[0].text.value
-            }
-            for msg in messages.data if msg.role in ["user", "assistant"]
-        ]
-
+        # Only include the user's question and the assistant's reply in the returned history
+        initial_history = []
+        if input.message:
+            initial_history.append({"role": "user", "text": input.message})
+        assistant_msg = next((msg for msg in messages.data if msg.role == "assistant"), None)
+        if assistant_msg:
+            logger.info(f"RAW ASSISTANT MESSAGE OBJECT: {assistant_msg}")
+            initial_history.append({"role": "assistant", "text": assistant_msg.content[0].text.value})
         logger.info(f"Total /initialize_chat time: {time.time() - total_start:.2f}s")
-
         return {
             "thread_id": thread_id,
             "history": initial_history
         }
-
     except Exception as e:
         logger.error(f"Error in initialize_chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -687,7 +810,7 @@ async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
 
         # Create thread
         print("📝 Creating new thread...")
-        thread = await sync_to_async(openai.beta.threads.create)()
+        thread = await client.beta.threads.create()
         print(f"✅ Thread created with ID: {thread.id}")
 
         # Send initial message
@@ -713,7 +836,7 @@ async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
 )
 
 
-        message = await sync_to_async(openai.beta.threads.messages.create)(
+        message = await client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
             content=prompt
@@ -722,7 +845,7 @@ async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
 
         # Create run
         print("🚀 Starting assistant run...")
-        run = await sync_to_async(openai.beta.threads.runs.create)(
+        run = await client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=assistant_id,
             tool_choice={
@@ -740,7 +863,7 @@ async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
         timeout_seconds = 180
 
         while True:
-            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+            run_status = await client.beta.threads.runs.retrieve(
                 thread_id=thread.id,
                 run_id=run.id
             )
@@ -750,7 +873,7 @@ async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
                 tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
                 tool_outputs = [{"tool_call_id": tc.id, "output": tc.function.arguments} for tc in tool_calls]
                 
-                run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                run = await client.beta.threads.runs.submit_tool_outputs(
                     thread_id=thread.id,
                     run_id=run.id,
                     tool_outputs=tool_outputs
@@ -771,7 +894,7 @@ async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
 
         # Get the response
         print("📝 Retrieving messages...")
-        messages = await sync_to_async(openai.beta.threads.messages.list)(thread_id=thread.id)
+        messages = await client.beta.threads.messages.list(thread_id=thread.id)
         response = messages.data[0].content[0].text.value
         
         # Debug logging
@@ -805,7 +928,7 @@ async def elaboration_feedback_api(thread_id: str, user_message: str, full_parag
 
         # Create a new thread for feedback
         print("📝 Creating new thread for feedback...")
-        thread = await sync_to_async(openai.beta.threads.create)()
+        thread = await client.beta.threads.create()
         print(f"✅ Thread created with ID: {thread.id}")
 
         # Construct the prompt
@@ -832,7 +955,7 @@ async def elaboration_feedback_api(thread_id: str, user_message: str, full_parag
         )
 
         print("📝 Sending message to thread...")
-        await sync_to_async(openai.beta.threads.messages.create)(
+        await client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
             content=prompt
@@ -841,7 +964,7 @@ async def elaboration_feedback_api(thread_id: str, user_message: str, full_parag
 
         # Start a run with the same assistant
         print("🚀 Starting assistant run for feedback...")
-        run = await sync_to_async(openai.beta.threads.runs.create)(
+        run = await client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=assistant_id,
             tool_choice={
@@ -859,7 +982,7 @@ async def elaboration_feedback_api(thread_id: str, user_message: str, full_parag
         timeout_seconds = 180
 
         while True:
-            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+            run_status = await client.beta.threads.runs.retrieve(
                 thread_id=thread.id,
                 run_id=run.id
             )
@@ -874,7 +997,7 @@ async def elaboration_feedback_api(thread_id: str, user_message: str, full_parag
                             "output": tool_call.function.arguments
                         })
                 if tool_outputs:
-                    run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                    run = await client.beta.threads.runs.submit_tool_outputs(
                         thread_id=thread.id,
                         run_id=run.id,
                         tool_outputs=tool_outputs
@@ -894,7 +1017,7 @@ async def elaboration_feedback_api(thread_id: str, user_message: str, full_parag
 
         # Get the response
         print("📝 Retrieving feedback messages...")
-        messages = await sync_to_async(openai.beta.threads.messages.list)(thread_id=thread.id)
+        messages = await client.beta.threads.messages.list(thread_id=thread.id)
         
         if not messages.data or not messages.data[0].content:
             raise HTTPException(status_code=500, detail="No assistant message found")
@@ -941,7 +1064,7 @@ async def elaboration_summary_api(topic: str, conversation: str) -> str:
             raise ValueError("❌ Elaboration Tutor Assistant ID not found in environment variables.")
 
         # Create thread
-        thread = await sync_to_async(openai.beta.threads.create)()
+        thread = await client.beta.threads.create()
         print(f"✅ Thread created with ID: {thread.id}")
 
         # Construct the prompt
@@ -987,7 +1110,7 @@ Here is the conversation:
 """
         # Send message
         print("📝 Sending message...")
-        await sync_to_async(openai.beta.threads.messages.create)(
+        await client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
             content=prompt
@@ -996,7 +1119,7 @@ Here is the conversation:
 
         # Start a run with the same assistant
         print("🚀 Starting assistant run for summary...")
-        run = await sync_to_async(openai.beta.threads.runs.create)(
+        run = await client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=assistant_id,
             tool_choice={
@@ -1014,7 +1137,7 @@ Here is the conversation:
         timeout_seconds = 180
 
         while True:
-            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+            run_status = await client.beta.threads.runs.retrieve(
                 thread_id=thread.id,
                 run_id=run.id
             )
@@ -1032,7 +1155,7 @@ Here is the conversation:
                         })
                 
                 if tool_outputs:
-                    run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                    run = await client.beta.threads.runs.submit_tool_outputs(
                         thread_id=thread.id,
                         run_id=run.id,
                         tool_outputs=tool_outputs
@@ -1053,7 +1176,7 @@ Here is the conversation:
 
         # Get the response
         print("📝 Retrieving messages...")
-        messages = await sync_to_async(openai.beta.threads.messages.list)(thread_id=thread.id)
+        messages = await client.beta.threads.messages.list(thread_id=thread.id)
         response = messages.data[0].content[0].text.value
         
         # Debug logging
@@ -1083,7 +1206,7 @@ async def elaboration_model_sentences_api(topic: str) -> str:
         if not assistant_id:
             raise ValueError("❌ MODEL_SENTENCE_WRITER_ID not found in environment variables.")
 
-        thread = await sync_to_async(openai.beta.threads.create)()
+        thread = await client.beta.threads.create()
         print(f"✅ Thread created with ID: {thread.id}")
 
         prompt = (
@@ -1109,13 +1232,13 @@ async def elaboration_model_sentences_api(topic: str) -> str:
             '''}'''
         )
         
-        await sync_to_async(openai.beta.threads.messages.create)(
+        await client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
             content=prompt
         )
         
-        run = await sync_to_async(openai.beta.threads.runs.create)(
+        run = await client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=assistant_id,
             tool_choice={"type": "function", "function": {"name": "generate_model_sentences"}}
@@ -1126,7 +1249,7 @@ async def elaboration_model_sentences_api(topic: str) -> str:
         tool_response_json = None  # 🆕 storage
 
         while True:
-            run_status = await sync_to_async(openai.beta.threads.runs.retrieve)(
+            run_status = await client.beta.threads.runs.retrieve(
                 thread_id=thread.id, run_id=run.id
             )
 
@@ -1141,7 +1264,7 @@ async def elaboration_model_sentences_api(topic: str) -> str:
                         "output": tool_response_json
                     })
 
-                run = await sync_to_async(openai.beta.threads.runs.submit_tool_outputs)(
+                run = await client.beta.threads.runs.submit_tool_outputs(
                     thread_id=thread.id,
                     run_id=run.id,
                     tool_outputs=tool_outputs
@@ -1312,4 +1435,142 @@ async def get_validated_elaboration_model_sentences(request: ElaborationModelSen
             await asyncio.sleep(1)
     
     raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+@app.get("/debug/raw_submissions/{assignment_id}")
+def debug_raw_submissions(assignment_id: int, db: Session = Depends(get_db)):
+    result = db.execute(text("SELECT * FROM jarvis_app_submission WHERE assignment_id = :aid"), {"aid": assignment_id})
+    rows = result.fetchall()
+    return {"count": len(rows), "rows": [dict(row._mapping) for row in rows]}
+
+@app.websocket("/ws/debate")
+async def websocket_debate(websocket: WebSocket):
+    await websocket.accept()
+    thread_id = None
+    run_id = None
+    assistant_id = os.getenv("DEBATOR_STUDENT_ID")
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            msg_type = msg.get("type")
+            data = msg.get("data", {})
+
+            if msg_type == "init":
+                prompt = data.get("prompt")
+                stance = data.get("stance")
+                if not prompt or not stance:
+                    await websocket.send_json({"type": "error", "data": {"message": "Missing prompt or stance."}})
+                    continue
+                thread = await client.beta.threads.create()
+                thread_id = thread.id
+                system_message = (
+                    f"This is the debate prompt: '{prompt}'. The user stance is: '{stance}'. "
+                    "You MUST take the opposite stance and start with a debate assertion of your position. "
+                    "Then the user will reply with their assertion, and you will engage in a meaningful debate to promote critical thinking."
+                )
+                await client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role="user",
+                    content=system_message
+                )
+                response_stream = await client.beta.threads.runs.create(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    stream=True
+                )
+                full_message = ""
+                async for chunk in response_stream:
+                    if (
+                        hasattr(chunk, 'data') and
+                        hasattr(chunk.data, 'delta') and
+                        hasattr(chunk.data.delta, 'content')
+                    ):
+                        token = chunk.data.delta.content
+                        if isinstance(token, list):
+                            parts = []
+                            for content_block in token:
+                                if hasattr(content_block, 'text') and hasattr(content_block.text, 'value') and content_block.text.value is not None:
+                                    parts.append(str(content_block.text.value))
+                                elif hasattr(content_block, 'text') and isinstance(content_block.text, str):
+                                    parts.append(content_block.text)
+                                elif hasattr(content_block, 'value') and content_block.value is not None:
+                                    parts.append(str(content_block.value))
+                                elif isinstance(content_block, str):
+                                    parts.append(content_block)
+                                else:
+                                    parts.append(str(content_block))
+                            token = ''.join(parts)
+                        full_message += token
+                        await websocket.send_json({
+                            "type": "token",
+                            "data": {"role": "assistant", "content": token}
+                        })
+                await websocket.send_json({
+                    "type": "message",
+                    "data": {"role": "assistant", "content": full_message}
+                })
+
+            elif msg_type == "message":
+                if not thread_id:
+                    await websocket.send_json({"type": "error", "data": {"message": "Debate not initialized."}})
+                    continue
+                user_message = data.get("content")
+                if not user_message:
+                    await websocket.send_json({"type": "error", "data": {"message": "Missing message content."}})
+                    continue
+                await client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role="user",
+                    content=user_message
+                )
+                response_stream = await client.beta.threads.runs.create(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    stream=True
+                )
+                full_message = ""
+                async for chunk in response_stream:
+                    if (
+                        hasattr(chunk, 'data') and
+                        hasattr(chunk.data, 'delta') and
+                        hasattr(chunk.data.delta, 'content')
+                    ):
+                        token = chunk.data.delta.content
+                        if isinstance(token, list):
+                            parts = []
+                            for content_block in token:
+                                if hasattr(content_block, 'text') and hasattr(content_block.text, 'value') and content_block.text.value is not None:
+                                    parts.append(str(content_block.text.value))
+                                elif hasattr(content_block, 'text') and isinstance(content_block.text, str):
+                                    parts.append(content_block.text)
+                                elif hasattr(content_block, 'value') and content_block.value is not None:
+                                    parts.append(str(content_block.value))
+                                elif isinstance(content_block, str):
+                                    parts.append(content_block)
+                                else:
+                                    parts.append(str(content_block))
+                            token = ''.join(parts)
+                        full_message += token
+                        await websocket.send_json({
+                            "type": "token",
+                            "data": {"role": "assistant", "content": token}
+                        })
+                await websocket.send_json({
+                    "type": "message",
+                    "data": {"role": "assistant", "content": full_message}
+                })
+
+            elif msg_type == "end":
+                await websocket.close()
+                break
+            else:
+                await websocket.send_json({"type": "error", "data": {"message": f"Unknown message type: {msg_type}"}})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        if websocket.application_state == WebSocketState.CONNECTED:
+            await websocket.send_json({"type": "error", "data": {"message": str(e)}})
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
