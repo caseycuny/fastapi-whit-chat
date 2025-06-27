@@ -68,8 +68,7 @@ sentry_sdk.init(
     traces_sample_rate=0.5,
 )
 
-# Create all tables if they don't exist (for local dev only)
-Base.metadata.create_all(bind=engine)
+
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
