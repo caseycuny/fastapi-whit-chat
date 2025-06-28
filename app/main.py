@@ -237,6 +237,8 @@ async def continue_chat(input: ChatInput):
 
         # Get messages
         messages = await client.beta.threads.messages.list(thread_id=input.thread_id, order="asc")
+        for msg in messages.data:
+            print(f"{msg.role}: {msg.content[0].text.value}")
         return {
             "thread_id": input.thread_id,
             "history": [
