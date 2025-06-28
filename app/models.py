@@ -24,7 +24,7 @@ class Class(Base):
     __tablename__ = "jarvis_app_class"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
-    teacher_id = Column(Integer, ForeignKey("customuser.id"))
+    teacher_id = Column(Integer, ForeignKey("jarvis_app_customuser.id"))
     period = Column(String)
     year = Column(Integer)
     grade = Column(String)
@@ -35,7 +35,7 @@ class Class(Base):
 class Assignment(Base):
     __tablename__ = "jarvis_app_assignment"
     id = Column(Integer, primary_key=True, index=True)
-    class_instance_id = Column(Integer, ForeignKey("class.id"))
+    class_instance_id = Column(Integer, ForeignKey("jarvis_app_class.id"))
     title = Column(String)
     description = Column(Text)
     due_date = Column(DateTime)
@@ -60,7 +60,7 @@ class Submission(Base):
     __tablename__ = "jarvis_app_submission"
     id = Column(Integer, primary_key=True, index=True)
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
-    student_id = Column(Integer, ForeignKey("customuser.id"))
+    student_id = Column(Integer, ForeignKey("jarvis_app_customuser.id"))
     file = Column(String)
     status = Column(String)
     feedback = Column(JSON)
@@ -78,7 +78,7 @@ class Submission(Base):
 class ChatThread(Base):
     __tablename__ = "jarvis_app_chatthread"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("customuser.id"))
+    user_id = Column(Integer, ForeignKey("jarvis_app_customuser.id"))
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"), nullable=True)
     thread_id = Column(String)
     title = Column(String)
@@ -89,7 +89,7 @@ class ChatThread(Base):
 class ChatMessage(Base):
     __tablename__ = "jarvis_app_chatmessage"
     id = Column(Integer, primary_key=True, index=True)
-    thread_id = Column(Integer, ForeignKey("chatthread.id"))
+    thread_id = Column(Integer, ForeignKey("jarvis_app_chatthread.id"))
     sender = Column(String)
     text = Column(Text)
     created_at = Column(DateTime)
@@ -97,7 +97,7 @@ class ChatMessage(Base):
 class DebateTopic(Base):
     __tablename__ = "jarvis_app_debatetopic"
     id = Column(Integer, primary_key=True, index=True)
-    teacher_id = Column(Integer, ForeignKey("customuser.id"))
+    teacher_id = Column(Integer, ForeignKey("jarvis_app_customuser.id"))
     topic = Column(String)
     created_at = Column(DateTime)
     is_active = Column(Boolean, default=True)
@@ -106,7 +106,7 @@ class DebateTopic(Base):
 class DebatePrompt(Base):
     __tablename__ = "jarvis_app_debateprompt"
     id = Column(Integer, primary_key=True, index=True)
-    topic_id = Column(Integer, ForeignKey("debatetopic.id"))
+    topic_id = Column(Integer, ForeignKey("jarvis_app_debatetopic.id"))
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
     text = Column(Text)
     is_ai_generated = Column(Boolean, default=True)
@@ -115,9 +115,9 @@ class DebatePrompt(Base):
 class StudentDebate(Base):
     __tablename__ = "jarvis_app_studentdebate"
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("customuser.id"))
-    prompt_id = Column(Integer, ForeignKey("debateprompt.id"), nullable=True)
-    topic_id = Column(Integer, ForeignKey("debatetopic.id"), nullable=True)
+    student_id = Column(Integer, ForeignKey("jarvis_app_customuser.id"))
+    prompt_id = Column(Integer, ForeignKey("jarvis_app_debateprompt.id"), nullable=True)
+    topic_id = Column(Integer, ForeignKey("jarvis_app_debatetopic.id"), nullable=True)
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"), nullable=True)
     chosen_side = Column(String)
     transcript = Column(Text)
@@ -126,7 +126,7 @@ class StudentDebate(Base):
 class DebateAnalysis(Base):
     __tablename__ = "jarvis_app_debateanalysis"
     id = Column(Integer, primary_key=True, index=True)
-    student_debate_id = Column(Integer, ForeignKey("studentdebate.id"))
+    student_debate_id = Column(Integer, ForeignKey("jarvis_app_studentdebate.id"))
     transcript_text = Column(Text)
     overall_score = Column(Integer)
     created_at = Column(DateTime)
