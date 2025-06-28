@@ -211,14 +211,14 @@ async def continue_chat(input: ChatInput):
             raise HTTPException(status_code=500, detail="TEACHER_CHAT_BUDDY_ID not set")
 
         # Create message
-        client.beta.threads.messages.create(
+        await client.beta.threads.messages.create(
             thread_id=input.thread_id,
             role="user",
             content=input.message
         )
 
         # Create and monitor run with the teacher assistant
-        run = client.beta.threads.runs.create(
+        run = await client.beta.threads.runs.create(
             thread_id=input.thread_id,
             assistant_id=teacher_assistant_id
         )
@@ -226,7 +226,7 @@ async def continue_chat(input: ChatInput):
         timeout = 60
         start_time = time.time()
         while True:
-            status = client.beta.threads.runs.retrieve(run.id, thread_id=input.thread_id).status
+            status = (await client.beta.threads.runs.retrieve(run.id, thread_id=input.thread_id)).status
             if status == "completed":
                 break
             elif status in ["failed", "cancelled"]:
@@ -236,7 +236,7 @@ async def continue_chat(input: ChatInput):
             await asyncio.sleep(1)
 
         # Get messages
-        messages = client.beta.threads.messages.list(thread_id=input.thread_id, order="asc")
+        messages = await client.beta.threads.messages.list(thread_id=input.thread_id, order="asc")
         return {
             "thread_id": input.thread_id,
             "history": [
@@ -364,7 +364,7 @@ async def initialize_chat(input: InitChatInput, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail="TEACHER_CHAT_BUDDY_ID not set")
         # Create thread
         t0 = time.time()
-        thread = client.beta.threads.create()
+        thread = await client.beta.threads.create()
         thread_id = thread.id
         logger.info(f"Created thread with ID: {thread_id} in {time.time() - t0:.2f}s")
         # Fetch submission feedback from DB
@@ -387,7 +387,7 @@ async def initialize_chat(input: InitChatInput, db: Session = Depends(get_db)):
         else:
             combined_message = f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}"
         # Add the combined message as the first user message
-        client.beta.threads.messages.create(
+        await client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=combined_message
@@ -395,7 +395,7 @@ async def initialize_chat(input: InitChatInput, db: Session = Depends(get_db)):
         logger.info("Added combined user/context message to thread.")
         # Create initial run with the teacher assistant
         t3 = time.time()
-        run = client.beta.threads.runs.create(
+        run = await client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=teacher_assistant_id
         )
@@ -405,7 +405,7 @@ async def initialize_chat(input: InitChatInput, db: Session = Depends(get_db)):
         start_time = time.time()
         logger.info("Polling OpenAI run for completion...")
         while True:
-            status = client.beta.threads.runs.retrieve(run.id, thread_id=thread_id).status
+            status = (await client.beta.threads.runs.retrieve(run.id, thread_id=thread_id)).status
             if status == "completed":
                 break
             elif status in ["failed", "cancelled"]:
@@ -418,7 +418,7 @@ async def initialize_chat(input: InitChatInput, db: Session = Depends(get_db)):
         logger.info(f"OpenAI run completed in {time.time() - start_time:.2f}s")
         # Get the initial assistant message
         t4 = time.time()
-        messages = client.beta.threads.messages.list(thread_id=thread_id, order="asc")
+        messages = await client.beta.threads.messages.list(thread_id=thread_id, order="asc")
         logger.info(f"Fetched messages in {time.time() - t4:.2f}s")
         # Only include the user's question and the assistant's reply in the returned history
         initial_history = []
@@ -510,7 +510,7 @@ async def handle_run_completion(thread_id: str, run_id: str, timeout: int = 120)
     """
     start_time = time.time()
     while True:
-        run_status = client.beta.threads.runs.retrieve(
+        run_status = await client.beta.threads.runs.retrieve(
             thread_id=thread_id,
             run_id=run_id
         )
@@ -525,7 +525,7 @@ async def handle_run_completion(thread_id: str, run_id: str, timeout: int = 120)
                         "output": tool_call.function.arguments
                     })
             if tool_outputs:
-                run = client.beta.threads.runs.submit_tool_outputs(
+                run = await client.beta.threads.runs.submit_tool_outputs(
                     thread_id=thread_id,
                     run_id=run_id,
                     tool_outputs=tool_outputs
@@ -542,7 +542,7 @@ async def handle_run_completion(thread_id: str, run_id: str, timeout: int = 120)
         await asyncio.sleep(2)
 
     # Get the response
-    messages = client.beta.threads.messages.list(thread_id=thread_id)
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
     response = None
     for msg in messages.data:
         if msg.role == "assistant" and msg.content:
@@ -592,15 +592,15 @@ async def get_validated_debate_prompts(topic: str, max_retries: int = 2) -> Dict
     for attempt in range(max_retries):
         try:
             # Create thread and send prompt
-            thread = client.beta.threads.create()
-            client.beta.threads.messages.create(
+            thread = await client.beta.threads.create()
+            await client.beta.threads.messages.create(
                 thread_id=thread.id,
                 role="user",
                 content=prompt
             )
 
             # Create run with tool choice
-            run = client.beta.threads.runs.create(
+            run = await client.beta.threads.runs.create(
                 thread_id=thread.id,
                 assistant_id=assistant_id,
                 tool_choice={
