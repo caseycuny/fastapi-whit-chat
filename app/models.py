@@ -5,7 +5,7 @@ from sqlalchemy.orm import relationship
 from .db import Base
 
 class CustomUser(Base):
-    __tablename__ = "customuser"
+    __tablename__ = "jarvis_app_customuser"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     username = Column(String, unique=True, index=True)
@@ -21,7 +21,7 @@ class CustomUser(Base):
     # Relationships omitted for brevity
 
 class Class(Base):
-    __tablename__ = "class"
+    __tablename__ = "jarvis_app_class"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     teacher_id = Column(Integer, ForeignKey("customuser.id"))
@@ -76,7 +76,7 @@ class Submission(Base):
     student = relationship("CustomUser", backref="submissions")
 
 class ChatThread(Base):
-    __tablename__ = "chatthread"
+    __tablename__ = "jarvis_app_chatthread"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("customuser.id"))
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"), nullable=True)
@@ -87,7 +87,7 @@ class ChatThread(Base):
     is_active = Column(Boolean)
 
 class ChatMessage(Base):
-    __tablename__ = "chatmessage"
+    __tablename__ = "jarvis_app_chatmessage"
     id = Column(Integer, primary_key=True, index=True)
     thread_id = Column(Integer, ForeignKey("chatthread.id"))
     sender = Column(String)
@@ -95,7 +95,7 @@ class ChatMessage(Base):
     created_at = Column(DateTime)
 
 class DebateTopic(Base):
-    __tablename__ = "debatetopic"
+    __tablename__ = "jarvis_app_debatetopic"
     id = Column(Integer, primary_key=True, index=True)
     teacher_id = Column(Integer, ForeignKey("customuser.id"))
     topic = Column(String)
@@ -104,7 +104,7 @@ class DebateTopic(Base):
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
 
 class DebatePrompt(Base):
-    __tablename__ = "debateprompt"
+    __tablename__ = "jarvis_app_debateprompt"
     id = Column(Integer, primary_key=True, index=True)
     topic_id = Column(Integer, ForeignKey("debatetopic.id"))
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
@@ -113,7 +113,7 @@ class DebatePrompt(Base):
     created_at = Column(DateTime)
 
 class StudentDebate(Base):
-    __tablename__ = "studentdebate"
+    __tablename__ = "jarvis_app_studentdebate"
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("customuser.id"))
     prompt_id = Column(Integer, ForeignKey("debateprompt.id"), nullable=True)
@@ -124,7 +124,7 @@ class StudentDebate(Base):
     submitted_at = Column(DateTime)
 
 class DebateAnalysis(Base):
-    __tablename__ = "debateanalysis"
+    __tablename__ = "jarvis_app_debateanalysis"
     id = Column(Integer, primary_key=True, index=True)
     student_debate_id = Column(Integer, ForeignKey("studentdebate.id"))
     transcript_text = Column(Text)
