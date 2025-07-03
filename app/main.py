@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from openai import OpenAI, AsyncOpenAI
 import os, time
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Union
 from fastapi.responses import JSONResponse
 import logging
 import httpx
@@ -17,7 +17,8 @@ from .schemas import (
     ElaborationFeedbackResponse,
     ElaborationSummaryResponse,
     GenerateArgumentParagraphResponse,
-    ElaborationModelSentencesResponse
+    ElaborationModelSentencesResponse,
+    ProcessDebateAnalysisResponse
 )
 from .utils import extract_json_from_response
 from asgiref.sync import sync_to_async
@@ -891,7 +892,7 @@ async def initialize_elaboration_tutor_api(topic: str) -> Tuple[str, str]:
             if (datetime.now() - start_time).total_seconds() > timeout_seconds:
                 raise HTTPException(status_code=504, detail="Request timed out")
             
-            await asyncio.sleep(1)  # Non-blocking sleep
+            await asyncio.sleep(1)
 
         # Get the response
         print("📝 Retrieving messages...")
@@ -1574,4 +1575,506 @@ async def websocket_debate(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+
+async def debate_analysis_api(transcript: list) -> dict:
+    """
+    Calls OpenAI Assistant for debate analysis, handles tool call, and returns validated output.
+    """
+    assistant_id = os.getenv("DEBATE_ANALYZER_ID")
+    if not assistant_id:
+        raise HTTPException(status_code=500, detail="DEBATE_ANALYZER_ID not set in environment variables.")
+
+    # Compose prompt and sample output
+    prompt = (
+        "You are an expert debate coach and AI analyst. Analyze the following debate transcript and return a structured JSON object using the required tool 'process_debate_analysis'. "
+        "You MUST call the tool process_debate_analysis and return ONLY the JSON object, no extra text. "
+        "Here is a sample output:\n"
+        "{\n"
+        "  \"overall_score\": 87,\n"
+        "  \"ai_feedback_summary\": \"Strong argument structure, but needs more evidence.\",\n"
+        "  \"bloom_percentages\": {\"remember\": 10, \"understand\": 20, \"apply\": 15, \"analyze\": 20, \"evaluate\": 20, \"create\": 15},\n"
+        "  \"category_scores\": {\"argument_quality\": 90, \"critical_thinking\": 85, \"rhetorical_skill\": 80, \"responsiveness\": 88, \"structure_clarity\": 92, \"style_delivery\": 80},\n"
+        "  \"persuasive_appeals\": [{\"appeal_type\": \"ethos\", \"count\": 2, \"example_snippets\": [\"As a student...\"], \"effectiveness_score\": 80}],\n"
+        "  \"rhetorical_devices\": [{\"device_type\": \"metaphor\", \"raw_label\": \"metaphor\", \"description\": \"Used a metaphor.\", \"count\": 1, \"example_snippets\": [\"The mind is a garden...\"], \"effectiveness_score\": 90}],\n"
+        "}\n"
+        "Here is the transcript:\n"
+        f"{json.dumps(transcript)}"
+    )
+
+    # Create thread and send message
+    thread = await client.beta.threads.create()
+    await client.beta.threads.messages.create(
+        thread_id=thread.id,
+        role="user",
+        content=prompt
+    )
+
+    # Start run with tool choice
+    run = await client.beta.threads.runs.create(
+        thread_id=thread.id,
+        assistant_id=assistant_id,
+        tool_choice={"type": "function", "function": {"name": "process_debate_analysis"}},
+        tools=[{"type": "function", "function": {"name": "process_debate_analysis"}}]
+    )
+
+    # Wait for completion and handle tool call
+    start_time = datetime.now()
+    timeout_seconds = 180
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+        if run_status.status == 'requires_action':
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            tool_outputs = []
+            for tc in tool_calls:
+                tool_outputs.append({
+                    "tool_call_id": tc.id,
+                    "output": tc.function.arguments
+                })
+            run = await client.beta.threads.runs.submit_tool_outputs(
+                thread_id=thread.id,
+                run_id=run.id,
+                tool_outputs=tool_outputs
+            )
+            continue
+        elif run_status.status == 'completed':
+            break
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+        if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+            await client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+            raise HTTPException(status_code=504, detail="Request timed out")
+        await asyncio.sleep(1)
+
+    # Fetch thread messages and extract tool call output from assistant's message
+    messages = await client.beta.threads.messages.list(thread_id=thread.id)
+    for msg in messages.data:
+        if msg.role == 'assistant':
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'tool_calls':
+                    for tool_call in getattr(content, 'tool_calls', []):
+                        if getattr(tool_call.function, 'name', None) == "process_debate_analysis":
+                            return json.loads(tool_call.function.arguments)
+            # Fallback: try to parse text as JSON if tool_calls not found
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'text':
+                    try:
+                        return json.loads(content.text.value)
+                    except Exception:
+                        continue
+    raise HTTPException(status_code=500, detail="No valid tool call output found in assistant's message.")
+
+@app.post("/api/debate/analyze")
+async def get_validated_debate_analysis(request: dict) -> dict:
+    """
+    Analyze a debate transcript, validate output, and retry up to 2 times if needed.
+    """
+    transcript = request.get("transcript")
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Transcript is required.")
+
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response_str = await debate_analysis_api(transcript)
+            print("DEBUG: Raw OpenAI response:", response_str)
+            # Try to extract JSON from the response string
+            if isinstance(response_str, str):
+                try:
+                    data = json.loads(response_str)
+                    print("DEBUG: Parsed JSON data:", data)
+                except Exception as e:
+                    print("DEBUG: JSON parse error, raw string:", response_str)
+                    raise
+            else:
+                data = response_str
+                print("DEBUG: Data is not a string, value:", data)
+            # Validate with Pydantic
+            validated = ProcessDebateAnalysisResponse(**data)
+            print("DEBUG: Pydantic validated data:", validated)
+            return {"response": validated.dict()}
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            print(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid debate analysis after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(1)
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+# Add new Pydantic models for lesson plan generation
+class ElaborationLessonPlanRequest(BaseModel):
+    class_id: int
+    assignment_id: int
+    grade: str
+    teacher_id: int
+
+class LessonPlanMaterialsRequest(BaseModel):
+    lesson_plan: dict
+    lesson_plan_id: Union[str, int]  # Accept both string temp_ids and int db_ids
+
+class ElaborationLessonPlanResponse(BaseModel):
+    lesson_plans: List[dict]
+    success: bool
+    message: Optional[str] = None
+
+class LessonPlanMaterialsResponse(BaseModel):
+    materials: str
+    success: bool
+    message: Optional[str] = None
+
+async def get_classwide_elaboration_data(class_id: int, assignment_id: int, db: Session):
+    """Fetch classwide elaboration data from database"""
+    try:
+        # Query the ClasswideElaborationData table
+        result = db.execute(text("""
+            SELECT most_popular_topics, unique_topics, most_common_techniques, 
+                   least_common_techniques, mixed_usage_observations, average_alignment_score,
+                   reasoning_depth_summary, evidence_language_notes, claim_elaboration_gaps,
+                   overgeneralizations, rhetorical_verbs, causal_connectors, metacognitive_phrases
+            FROM jarvis_app_classwideelaborationdata 
+            WHERE class_instance_id = :class_id AND assignment_id = :assignment_id
+            LIMIT 1
+        """), {"class_id": class_id, "assignment_id": assignment_id})
+        
+        row = result.fetchone()
+        if not row:
+            raise ValueError("No classwide elaboration data found")
+            
+        return {
+            "topics": {
+                "most_popular": row.most_popular_topics or [],
+                "unique": row.unique_topics or []
+            },
+            "elaboration_techniques": {
+                "most_common": row.most_common_techniques or [],
+                "least_common": row.least_common_techniques or [],
+                "mixed_usage_observations": row.mixed_usage_observations or ""
+            },
+            "claim_evidence_reasoning": {
+                "average_alignment_score": row.average_alignment_score,
+                "reasoning_depth_summary": row.reasoning_depth_summary or "",
+                "evidence_language_notes": row.evidence_language_notes or "",
+                "claim_elaboration_gaps": row.claim_elaboration_gaps or [],
+                "overgeneralizations": row.overgeneralizations or []
+            },
+            "language_use_and_style": {
+                "rhetorical_verbs": row.rhetorical_verbs or [],
+                "causal_connectors": row.causal_connectors or [],
+                "metacognitive_phrases": row.metacognitive_phrases or []
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching classwide data: {e}")
+        raise
+
+async def elaboration_lesson_plan_generation_api(class_id: int, assignment_id: int, grade: str, elaboration_analysis: dict) -> List[dict]:
+    """Generate lesson plans using OpenAI Assistant based on classwide elaboration analysis"""
+    print(f"[DEBUG] elaboration_lesson_plan_generation_api called with class_id={class_id}, assignment_id={assignment_id}, grade={grade}")
+
+    # Get the teaching-specific assistant ID
+    teaching_assistant_id = os.getenv("LESSON_PLAN_MAKER_ID")
+    if not teaching_assistant_id:
+        print("[DEBUG] LESSON_PLAN_MAKER_ID not found in environment variables")
+        raise ValueError("Teaching Assistant ID not found in environment variables")
+
+    print(f"[DEBUG] Using teaching assistant ID: {teaching_assistant_id}")
+    print(f"[DEBUG] Prepared elaboration analysis: {json.dumps(elaboration_analysis, indent=2)}")
+
+    # Create prompt for lesson plan generation (following teach_with_whit structure)
+    prompt = f"""
+Based on the following classwide elaboration analysis for a {grade} grade class, design lesson plans that address the identified strengths and areas for improvement.
+
+Class Analysis:
+{json.dumps(elaboration_analysis, indent=2)}
+
+Please create lesson plans that:
+1. Build on the most common techniques students are already using successfully
+2. Address the least common or missing techniques that need development
+3. Incorporate topics that students are interested in
+4. Address any claim-evidence reasoning gaps
+5. Is appropriate for {grade} grade level
+
+You must use the lesson_plan_format function to structure your response.
+"""
+
+    print(f"[DEBUG] Created prompt for OpenAI")
+
+    # Create thread
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+    print(f"[DEBUG] Created new thread: {thread_id}")
+
+    # Send message to thread
+    print("[DEBUG] Sending message to OpenAI...")
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=prompt
+    )
+
+    # Start the run with explicit tool choice
+    print("[DEBUG] Starting OpenAI run...")
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=teaching_assistant_id,
+        tool_choice={
+            "type": "function",
+            "function": {
+                "name": "lesson_plan_format"
+            }
+        }
+    )
+
+    print(f"[DEBUG] Run created with ID: {run.id}")
+
+    # Wait for completion and handle function calls (following teach_with_whit pattern)
+    lesson_plans = []
+    start_time = time.time()
+    timeout = 180
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id
+        )
+        
+        print(f"[DEBUG] Run status: {run_status.status}")
+        
+        if run_status.status == 'requires_action':
+            print("🛠️ Processing function call...")
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            
+            tool_outputs = []
+            for tool_call in tool_calls:
+                if tool_call.function.name == "lesson_plan_format":
+                    try:
+                        plan_data = json.loads(tool_call.function.arguments)
+                        lesson_plans.append(plan_data)
+                        print(f"[DEBUG] Processed lesson plan: {plan_data.get('title', 'Untitled')}")
+                        tool_outputs.append({
+                            "tool_call_id": tool_call.id,
+                            "output": json.dumps(plan_data)
+                        })
+                    except json.JSONDecodeError as e:
+                        print(f"❌ Error parsing lesson plan JSON: {e}")
+                        raise ValueError(f"Invalid JSON in lesson plan format: {str(e)}")
+            
+            if tool_outputs:
+                print("[DEBUG] Submitting tool outputs...")
+                await client.beta.threads.runs.submit_tool_outputs(
+                    thread_id=thread_id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+                
+        elif run_status.status == 'completed':
+            print("✅ Run completed")
+            break
+            
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            print(f"❌ Run {run_status.status}")
+            raise Exception(f"Run {run_status.status}")
+            
+        if time.time() - start_time > timeout:
+            print("❌ Run timed out")
+            raise TimeoutError("Lesson plan generation timed out")
+            
+        await asyncio.sleep(2)
+
+    if not lesson_plans:
+        print("❌ No lesson plans returned from assistant.")
+        raise ValueError("No lesson plans generated")
+
+    print(f"[DEBUG] Generated {len(lesson_plans)} lesson plan(s)")
+    return lesson_plans
+
+async def lesson_plan_materials_generation_api(lesson_plan_text: str) -> str:
+    """Generate materials for a lesson plan using OpenAI Assistant"""
+    print("[DEBUG] lesson_plan_materials_generation_api called")
+    print(lesson_plan_text[:200] + ("..." if len(lesson_plan_text) > 200 else ""))
+    
+    # Get assistant ID
+    assistant_id = os.getenv("LESSON_PLAN_MATERIAL_MAKER_ID")
+    if not assistant_id:
+        raise ValueError("❌ LESSON_PLAN_MATERIAL_MAKER_ID not found in environment variables.")
+    
+    # Create thread and send lesson plan
+    thread = await client.beta.threads.create()
+    await client.beta.threads.messages.create(
+        thread_id=thread.id,
+        role="user",
+        content=(
+            "Read the following lesson plan and, if it calls for materials (like model paragraphs, outlines, graphic organizers, examples, or worksheets), generate those materials using plain markdown. "
+            "Do NOT wrap any section in triple backticks or code blocks unless you are showing actual code (such as Python, JavaScript, etc.). "
+            "Use markdown headings (#, ##, ###), lists (-, *), bold (**bold**), italics (_italic_), and blockquotes (>) for structure. "
+            "Do NOT use code blocks labeled as 'markdown'. "
+            "Your output should be ready for direct markdown-to-HTML rendering. "
+            "Avoid excessive blank lines and use clear section breaks with headings.\n\n"
+            "Lesson Plan:\n" + lesson_plan_text
+        )
+    )
+    
+    run = await client.beta.threads.runs.create(
+        thread_id=thread.id,
+        assistant_id=assistant_id
+    )
+    
+    # Wait for completion
+    timeout = 120
+    start_time = time.time()
+    while True:
+        status = (await client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)).status
+        if status == "completed":
+            break
+        elif status in ["failed", "cancelled", "expired"]:
+            raise Exception(f"Run {status}")
+        elif time.time() - start_time > timeout:
+            raise TimeoutError("Lesson plan materials generation timed out.")
+        await asyncio.sleep(2)
+    
+    # Get the response
+    messages = await client.beta.threads.messages.list(thread_id=thread.id)
+    for msg in messages.data:
+        if msg.role == "assistant" and msg.content:
+            material_markdown = msg.content[0].text.value.strip()
+            
+            # Replace all colons with dashes for better formatting
+            material_markdown = material_markdown.replace(":", " -")
+            
+            print("=" * 60)
+            print(material_markdown)
+            print("=" * 60)
+            return material_markdown
+    
+    raise ValueError("No usable assistant message received for lesson plan materials.")
+
+@app.post("/api/elaboration/lesson-plans", response_model=ElaborationLessonPlanResponse)
+async def generate_elaboration_lesson_plans(request: ElaborationLessonPlanRequest, db: Session = Depends(get_db)):
+    """Generate lesson plans based on classwide elaboration analysis with retry logic"""
+    print(f"[DEBUG] generate_elaboration_lesson_plans called with: {request}")
+    
+    try:
+        # Fetch classwide elaboration data
+        elaboration_analysis = await get_classwide_elaboration_data(request.class_id, request.assignment_id, db)
+        
+        # Try to generate lesson plans with retry logic
+        max_retries = 2
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"[DEBUG] Attempt {attempt + 1} of {max_retries}")
+                lesson_plans = await elaboration_lesson_plan_generation_api(
+                    request.class_id, 
+                    request.assignment_id, 
+                    request.grade,
+                    elaboration_analysis
+                )
+                
+                # Add unique IDs for frontend reference
+                for i, plan in enumerate(lesson_plans):
+                    plan['temp_id'] = f"temp_{request.class_id}_{request.assignment_id}_{i}_{int(time.time())}"
+                
+                return ElaborationLessonPlanResponse(
+                    lesson_plans=lesson_plans,
+                    success=True,
+                    message=f"Successfully generated {len(lesson_plans)} lesson plan(s)"
+                )
+                
+            except Exception as e:
+                last_error = e
+                print(f"[DEBUG] Attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)  # Wait before retry
+                continue
+        
+        # If all retries failed
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to generate lesson plans after {max_retries} attempts: {str(last_error)}"
+        )
+        
+    except Exception as e:
+        print(f"[DEBUG] Error in generate_elaboration_lesson_plans: {str(e)}")
+        import traceback
+        print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/lesson-plans/materials", response_model=LessonPlanMaterialsResponse)
+async def generate_lesson_plan_materials(request: LessonPlanMaterialsRequest):
+    """Generate materials for a lesson plan with retry logic"""
+    print(f"[DEBUG] generate_lesson_plan_materials called")
+    print(f"[DEBUG] Request data: lesson_plan_id={request.lesson_plan_id}, lesson_plan keys={list(request.lesson_plan.keys()) if request.lesson_plan else 'None'}")
+    
+    # Convert lesson plan dict to text format
+    lesson_plan = request.lesson_plan
+    lesson_plan_text = f"""
+Title: {lesson_plan.get('title', '')}
+Grade Level: {lesson_plan.get('grade_level', '')}
+Subject: {lesson_plan.get('subject', '')}
+
+Learning Objectives:
+{chr(10).join(f"- {obj}" for obj in lesson_plan.get('learning_objectives', []))}
+
+Warm-Up:
+{lesson_plan.get('warm_up', '')}
+
+Mini-Lesson:
+{lesson_plan.get('mini_lesson', '')}
+
+Guided Practice:
+{lesson_plan.get('guided_practice', '')}
+
+Independent Practice:
+{lesson_plan.get('independent_practice', '')}
+
+Formative Assessment:
+{lesson_plan.get('formative_assessment', '')}
+
+Closure/Reflection:
+{lesson_plan.get('closure_reflection', '')}
+
+Materials:
+{chr(10).join(f"- {mat}" for mat in lesson_plan.get('materials', []))}
+
+Key Design Principles:
+{json.dumps(lesson_plan.get('key_design_principles', {}), indent=2)}
+"""
+    
+    print(f"[DEBUG] Generated lesson plan text (first 200 chars): {lesson_plan_text[:200]}...")
+    
+    # Retry logic for materials generation
+    max_retries = 2
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"[DEBUG] Materials generation attempt {attempt + 1} of {max_retries}")
+            materials = await lesson_plan_materials_generation_api(lesson_plan_text)
+            
+            print(f"[DEBUG] Successfully generated materials (length: {len(materials)})")
+            
+            return LessonPlanMaterialsResponse(
+                materials=materials,
+                success=True,
+                message="Successfully generated materials"
+            )
+            
+        except Exception as e:
+            last_error = e
+            print(f"[DEBUG] Materials generation attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)  # Wait before retry
+                continue
+    
+    # If all retries failed
+    print(f"[DEBUG] All materials generation attempts failed. Last error: {str(last_error)}")
+    import traceback
+    print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
+    raise HTTPException(
+        status_code=500, 
+        detail=f"Failed to generate materials after {max_retries} attempts: {str(last_error)}"
+    )
 

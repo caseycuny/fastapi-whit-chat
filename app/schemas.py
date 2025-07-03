@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, RootModel, ValidationError
+from pydantic import BaseModel, Field, RootModel, ValidationError, conlist, confloat, conint
 from typing import List, Dict, Optional, Union, Any
 import re
 from pydantic import validator
@@ -423,6 +423,52 @@ class ElaborationModelSentencesResponse(BaseModel):
         extra = "forbid"
         strict = True
 
+class BloomPercentages(BaseModel):
+    remember: confloat(ge=0, le=100)
+    understand: confloat(ge=0, le=100)
+    apply: confloat(ge=0, le=100)
+    analyze: confloat(ge=0, le=100)
+    evaluate: confloat(ge=0, le=100)
+    create: confloat(ge=0, le=100)
+
+class CategoryScores(BaseModel):
+    argument_quality: confloat(ge=0, le=100)
+    critical_thinking: confloat(ge=0, le=100)
+    rhetorical_skill: confloat(ge=0, le=100)
+    responsiveness: confloat(ge=0, le=100)
+    structure_clarity: confloat(ge=0, le=100)
+    style_delivery: confloat(ge=0, le=100)
+
+class PersuasiveAppeal(BaseModel):
+    appeal_type: str
+    count: conint(ge=0)
+    example_snippets: List[str]
+    effectiveness_score: confloat(ge=0, le=100)
+
+class RhetoricalDevice(BaseModel):
+    device_type: str
+    raw_label: str
+    description: str
+    count: conint(ge=0)
+    example_snippets: List[str]
+    effectiveness_score: confloat(ge=0, le=100)
+
+class LogicalFallacy(BaseModel):
+    fallacy_name: str
+    raw_label: str
+    description: str
+    count: conint(ge=0)
+    example_snippets: List[str]
+    impact_score: confloat(ge=0, le=100)
+    correction_suggestion: str
+
+class ProcessDebateAnalysisResponse(BaseModel):
+    overall_score: confloat(ge=0, le=100)
+    ai_feedback_summary: str
+    bloom_percentages: BloomPercentages
+    category_scores: CategoryScores
+    persuasive_appeals: List[PersuasiveAppeal]
+    rhetorical_devices: List[RhetoricalDevice]
 
     class Config:
         extra = "forbid"
