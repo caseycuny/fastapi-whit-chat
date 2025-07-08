@@ -1,0 +1,537 @@
+{
+  "name": "get_rubric",
+  "description": "Get the grading rubric for a specific essay type",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "rubric_type": {
+        "type": "string",
+        "enum": ["SBAC", "AP Lang Synthesis", "AP Lang Rhetorical Anal", "AP Lang Argument", "AP Lit Poetry", "AP Lit Prose Fiction", "AP Lit Argument"],
+        "description": "The type of rubric to retrieve"
+      }
+    },
+    "required": ["rubric_type"]
+  },
+  "function": {
+    "SBAC": {
+      "name": "SBAC Argumentative Rubric",
+      "total_points": 10,
+      "categories": {
+        "organization_purpose": {
+          "max_points": 4,
+          "criteria": {
+            "4": [
+              "Clear and effective organizational structure, creating unity and completeness",
+              "Fully sustained organization between and within paragraphs",
+              "Consistently and purposefully focused",
+              "Claim is introduced, clearly communicated, and strongly maintained",
+              "Consistent use of transitional strategies",
+              "Effective introduction and conclusion",
+              "Logical progression of ideas with strong connections",
+              "Opposing arguments are acknowledged/addressed"
+            ],
+            "3": [
+              "Evident organizational structure and unity",
+              "Minor flaws do not interfere with coherence",
+              "Claim is clear and mostly maintained",
+              "Adequate transitions, introduction, and conclusion",
+              "Adequate progression and connections",
+              "Opposing arguments adequately acknowledged/addressed"
+            ],
+            "2": [
+              "Inconsistent organizational structure; some loose connections",
+              "Claim may be unclear or insufficiently sustained",
+              "Inconsistent transitions, weak introduction or conclusion",
+              "Uneven progression of ideas; unclear connections",
+              "Opposing arguments may be confusing or absent"
+            ],
+            "1": [
+              "Little or no discernible organization",
+              "Claim may be ambiguous or confusing",
+              "Few or no transitions",
+              "Introduction and/or conclusion may be missing",
+              "Ideas may be randomly ordered or unclear",
+              "Opposing arguments may not be acknowledged"
+            ]
+          }
+        },
+        "evidence_elaboration": {
+          "max_points": 4,
+          "criteria": {
+            "4": [
+              "Thorough and convincing elaboration of evidence",
+              "In-depth analysis and effective source use",
+              "Clear citations and appropriate vocabulary",
+              "Effective use of elaborative techniques"
+            ],
+            "3": [
+              "Adequate elaboration with reasoned analysis",
+              "Mix of precise and general language",
+              "Adequate citations and elaborative techniques"
+            ],
+            "2": [
+              "Uneven elaboration with weakly integrated evidence",
+              "Weak citations and reliance on summary or emotion",
+              "Inconsistent or ineffective vocabulary"
+            ],
+            "1": [
+              "Minimal elaboration; vague or unclear development",
+              "Minimal or absent evidence and citations",
+              "Limited vocabulary and little attempt at style"
+            ]
+          }
+        },
+        "conventions": {
+          "max_points": 2,
+          "criteria": {
+            "2": [
+              "Adequate use of grammar, spelling, and punctuation",
+              "May have numerous mistakes but essay is still readable and clear"
+            ],
+            "1": [
+              "Very Limited use of correct grammar and mechanics",
+              "Many mistakes across rules and mechanics",
+              "Readability is hindered by grammar mistakes"
+            ],
+            "0": [
+              "Little or no command of conventions",
+              "Constant errors",
+              "Paper is almost unreadable"
+            ]
+          },
+          "special_notes": [
+            "Do not factor spacing and alignment as that may be due to file upload issues",
+            "Ignore fragmented presentation or alignment concerns in scoring"
+          ]
+        }
+      }
+    },
+    "AP Lang Synthesis": {
+      "name": "AP Lang Synthesis Rubric",
+      "total_points": 6,
+      "rows": {
+        "thesis": {
+          "max_points": 1,
+          "criteria": {
+            "0": [
+              "No defensible thesis",
+              "Thesis only restates the prompt",
+              "Thesis summarizes the issue without a coherent claim",
+              "Thesis does not respond to the prompt"
+            ],
+            "1": [
+              "Responds to the prompt with a defensible thesis"
+            ]
+          }
+        },
+        "evidence_commentary": {
+          "max_points": 4,
+          "criteria": {
+            "0": [
+              "Restates thesis (if present), repeats provided info, or uses fewer than two sources"
+            ],
+            "1": [
+              "References at least two provided sources",
+              "Summarizes evidence but does not explain how it supports the argument"
+            ],
+            "2": [
+              "References at least three provided sources",
+              "Explains how some evidence relates to the argument, but no clear or valid line of reasoning is established"
+            ],
+            "3": [
+              "Provides specific evidence from at least three sources to support all claims",
+              "Explains how some evidence supports a line of reasoning"
+            ],
+            "4": [
+              "Provides specific evidence from at least three sources to support all claims in a clear line of reasoning",
+              "Consistently explains how the evidence supports the line of reasoning"
+            ]
+          }
+        },
+        "sophistication": {
+          "max_points": 1,
+          "criteria": {
+            "0": [
+              "Does not meet the criteria for one point"
+            ],
+            "1": [
+              "Demonstrates sophistication of thought and/or a complex understanding of the rhetorical situation"
+            ]
+          }
+        }
+      }
+    },
+    "AP Lang Rhetorical Anal": {
+      "name": "AP Lang Rhetorical Analysis Rubric",
+      "total_points": 6,
+      "rows": {
+        "thesis": {
+          "max_points": 1,
+          "criteria": {
+            "0": [
+              "No defensible thesis",
+              "Thesis only restates the prompt",
+              "Thesis summarizes the issue without a coherent claim",
+              "Thesis does not respond to the prompt"
+            ],
+            "1": [
+              "Responds to the prompt with a defensible thesis that analyzes the writer's rhetorical choices"
+            ]
+          }
+        },
+        "evidence_commentary": {
+          "max_points": 4,
+          "criteria": {
+            "0": [
+              "Restates thesis (if present), repeats provided information, or gives information irrelevant to the prompt"
+            ],
+            "1": [
+              "Provides mostly general evidence",
+              "Summarizes the evidence but does not explain how it supports the argument"
+            ],
+            "2": [
+              "Provides some specific relevant evidence",
+              "Explains how some evidence relates to the argument, but no clear or valid line of reasoning is established"
+            ],
+            "3": [
+              "Provides specific evidence to support all claims in a line of reasoning",
+              "Explains how some evidence supports a line of reasoning",
+              "Explains how at least one rhetorical choice contributes to the writer's argument, purpose, or message"
+            ],
+            "4": [
+              "Provides specific evidence to support all claims in a line of reasoning",
+              "Consistently explains how evidence supports a line of reasoning",
+              "Explains how multiple rhetorical choices contribute to the writer's argument, purpose, or message"
+            ]
+          }
+        },
+        "sophistication": {
+          "max_points": 1,
+          "criteria": {
+            "0": [
+              "Does not meet the criteria for one point"
+            ],
+            "1": [
+              "Demonstrates sophistication of thought and/or a complex understanding of the rhetorical situation",
+              "May include explaining the significance or relevance of the writer's rhetorical choices",
+              "May include explaining a purpose or function of the passage's complexities or tensions",
+              "May include employing a style that is consistently vivid and persuasive"
+            ]
+          },
+          "special_notes": [
+            "Sophistication must be part of the student's argument, not just a phrase or surface-level reference"
+          ]
+        }
+      }
+    },
+    "AP Lang Argument": {
+    "name": "AP Lang Argument Rubric",
+    "total_points": 6,
+    "rows": {
+      "thesis": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "No defensible thesis",
+            "Thesis only restates the prompt",
+            "Thesis summarizes the issue without a coherent claim",
+            "Thesis does not respond to the prompt"
+          ],
+          "1": [
+            "Responds to the prompt with a defensible thesis that presents a position"
+          ]
+        }
+      },
+      "evidence_commentary": {
+        "max_points": 4,
+        "criteria": {
+          "0": [
+            "Restates thesis (if present), repeats provided info, or provides irrelevant information"
+          ],
+          "1": [
+            "Provides mostly general evidence",
+            "Summarizes evidence but does not explain how it supports the argument"
+          ],
+          "2": [
+            "Provides some specific relevant evidence",
+            "Explains how some evidence relates to the argument, but no clear or valid line of reasoning is established"
+          ],
+          "3": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Explains how some evidence supports a line of reasoning"
+          ],
+          "4": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Consistently explains how the evidence supports a line of reasoning"
+          ]
+        }
+      },
+      "sophistication": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "Does not meet the criteria for one point"
+          ],
+          "1": [
+            "Demonstrates sophistication of thought and/or a complex understanding of the rhetorical situation",
+            "May include crafting a nuanced argument by consistently identifying and exploring complexities or tensions",
+            "May include articulating implications or limitations of an argument by situating it in a broader context",
+            "May include making effective rhetorical choices that strengthen the argument's force and impact",
+            "May include employing a style that is consistently vivid and persuasive"
+          ]
+        },
+        "special_notes": [
+          "Sophistication must be part of the student's argument, not just a phrase or surface-level reference"
+        ]
+      }
+    }
+  },
+  "AP Lit Poetry": {
+    "name": "AP Lit Poetry Analysis Rubric",
+    "total_points": 6,
+    "rows": {
+      "thesis": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "No defensible thesis",
+            "Thesis only restates the prompt",
+            "Thesis summarizes the issue without a coherent claim",
+            "Thesis does not respond to the prompt"
+          ],
+          "1": [
+            "Responds to the prompt with a defensible interpretation of the poem"
+          ]
+        }
+      },
+      "evidence_commentary": {
+        "max_points": 4,
+        "criteria": {
+          "0": [
+            "Restates thesis (if present), repeats provided information, or gives irrelevant information"
+          ],
+          "1": [
+            "Provides mostly general evidence",
+            "Summarizes evidence but does not explain how it supports the argument"
+          ],
+          "2": [
+            "Provides some specific, relevant evidence",
+            "Explains how some evidence relates to the argument, but no clear or valid line of reasoning is established"
+          ],
+          "3": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Explains how some evidence supports a line of reasoning",
+            "Explains how at least one literary element or technique in the poem contributes to its meaning"
+          ],
+          "4": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Consistently explains how evidence supports a line of reasoning",
+            "Explains how multiple literary elements or techniques in the poem contribute to its meaning"
+          ]
+        }
+      },
+      "sophistication": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "Does not meet the criteria for one point"
+          ],
+          "1": [
+            "Demonstrates sophistication of thought and/or develops a complex literary argument"
+          ]
+        }
+      }
+    }
+  },
+  "AP Lit Prose Fiction": {
+    "name": "AP Lit Prose Fiction Analysis Rubric",
+    "total_points": 6,
+    "rows": {
+      "thesis": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "No defensible thesis",
+            "Thesis only restates the prompt",
+            "Thesis summarizes the issue without a coherent claim",
+            "Thesis does not respond to the prompt"
+          ],
+          "1": [
+            "Responds to the prompt with a defensible interpretation of the passage"
+          ]
+        }
+      },
+      "evidence_commentary": {
+        "max_points": 4,
+        "criteria": {
+          "0": [
+            "Restates thesis (if present), repeats provided information, or gives irrelevant information"
+          ],
+          "1": [
+            "Provides mostly general evidence",
+            "Summarizes evidence but does not explain how it supports the argument"
+          ],
+          "2": [
+            "Provides some specific, relevant evidence",
+            "Explains how some evidence relates to the argument, but no clear or valid line of reasoning is established"
+          ],
+          "3": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Explains how some evidence supports a line of reasoning",
+            "Explains how at least one literary element or technique in the passage contributes to its meaning"
+          ],
+          "4": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Consistently explains how evidence supports a line of reasoning",
+            "Explains how multiple literary elements or techniques in the passage contribute to its meaning"
+          ]
+        }
+      },
+      "sophistication": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "Does not meet the criteria for one point"
+          ],
+          "1": [
+            "Demonstrates sophistication of thought and/or develops a complex literary argument"
+          ]
+        }
+      }
+    }
+  },
+  "AP Lit Argument": {
+    "name": "AP Lit Literary Argument Rubric",
+    "total_points": 6,
+    "rows": {
+      "thesis": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "No defensible thesis",
+            "Thesis only restates the prompt",
+            "Thesis summarizes the issue without a coherent claim",
+            "Thesis does not respond to the prompt"
+          ],
+          "1": [
+            "Responds to the prompt with a defensible interpretation of the selected work"
+          ]
+        }
+      },
+      "evidence_commentary": {
+        "max_points": 4,
+        "criteria": {
+          "0": [
+            "Restates thesis (if present), repeats provided information, or gives irrelevant information"
+          ],
+          "1": [
+            "Provides mostly general evidence",
+            "Summarizes the evidence but does not explain how it supports the argument"
+          ],
+          "2": [
+            "Provides some specific, relevant evidence",
+            "Explains how some evidence relates to the argument, but no clear or valid line of reasoning is established"
+          ],
+          "3": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Explains how some evidence supports a line of reasoning"
+          ],
+          "4": [
+            "Provides specific evidence to support all claims in a line of reasoning",
+            "Consistently explains how the evidence supports a line of reasoning"
+          ]
+        }
+      },
+      "sophistication": {
+        "max_points": 1,
+        "criteria": {
+          "0": [
+            "Does not meet the criteria for one point"
+          ],
+          "1": [
+            "Demonstrates sophistication of thought and/or develops a complex literary argument"
+          ]
+        }
+      }
+    }
+  }
+  },
+  "argumentative": {
+    "description": "Argumentative Essay Rubric",
+    "full_text": "This rubric evaluates argumentative essays based on claim, evidence, reasoning, and organization.",
+    "categories": {
+      "claim": {
+        "name": "Claim",
+        "max_points": 2,
+        "description": "Clear, specific, and arguable claim"
+      },
+      "evidence": {
+        "name": "Evidence",
+        "max_points": 3,
+        "description": "Relevant and sufficient evidence to support the claim"
+      },
+      "reasoning": {
+        "name": "Reasoning",
+        "max_points": 3,
+        "description": "Logical reasoning that connects evidence to claim"
+      },
+      "organization": {
+        "name": "Organization",
+        "max_points": 2,
+        "description": "Clear structure and logical flow"
+      }
+    }
+  },
+  "narrative": {
+    "description": "Narrative Essay Rubric",
+    "full_text": "This rubric evaluates narrative essays based on plot, character development, setting, and style.",
+    "categories": {
+      "plot": {
+        "name": "Plot",
+        "max_points": 3,
+        "description": "Engaging plot with clear beginning, middle, and end"
+      },
+      "characters": {
+        "name": "Characters",
+        "max_points": 2,
+        "description": "Well-developed characters with clear motivations"
+      },
+      "setting": {
+        "name": "Setting",
+        "max_points": 2,
+        "description": "Vivid and appropriate setting"
+      },
+      "style": {
+        "name": "Style",
+        "max_points": 3,
+        "description": "Effective use of language and literary devices"
+      }
+    }
+  },
+  "expository": {
+    "description": "Expository Essay Rubric",
+    "full_text": "This rubric evaluates expository essays based on thesis, support, organization, and clarity.",
+    "categories": {
+      "thesis": {
+        "name": "Thesis",
+        "max_points": 2,
+        "description": "Clear and focused thesis statement"
+      },
+      "support": {
+        "name": "Support",
+        "max_points": 3,
+        "description": "Strong supporting evidence and examples"
+      },
+      "organization": {
+        "name": "Organization",
+        "max_points": 2,
+        "description": "Logical structure and clear transitions"
+      },
+      "clarity": {
+        "name": "Clarity",
+        "max_points": 3,
+        "description": "Clear explanations and effective use of language"
+      }
+    }
+  }
+}

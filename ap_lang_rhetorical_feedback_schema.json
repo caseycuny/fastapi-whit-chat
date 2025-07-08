@@ -1,0 +1,235 @@
+{
+  "name": "ap_lang_rhetorical_feedback",
+  "description": "Structured feedback for an AP Lang Rhetorical Analysis essay based on the 6-point rubric",
+  "strict": true,
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "overall_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 6,
+        "description": "Total score out of 6 points for AP Language Rhetorical Analysis essay"
+      },
+      "scores": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "thesis": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Thesis score (0-1 points)"
+          },
+          "evidence_commentary": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "description": "Evidence and Commentary score (0-4 points)"
+          },
+          "sophistication": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Sophistication score (0-1 points)"
+          }
+        },
+        "required": ["thesis", "evidence_commentary", "sophistication"]
+      },
+      "overall_feedback": {
+        "type": "string",
+        "description": "Comprehensive overall feedback on the rhetorical analysis"
+      },
+      "feedback": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "enum": ["thesis", "evidence_commentary", "sophistication"]
+                },
+                "score": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4
+                },
+                "strengths": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "areas_for_improvement": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["name", "score", "strengths", "areas_for_improvement"]
+            }
+          }
+        },
+        "required": ["categories"]
+      },
+      "excerpts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": { "type": "string" },
+            "comment": { "type": "string" },
+            "category": {
+              "type": "string",
+              "enum": ["evidence_commentary", "sophistication", "thesis", "general"]
+            }
+          },
+          "required": ["text", "comment", "category"]
+        }
+      },
+      "rhetorical_line_of_reasoning": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rhetorical_choice": { 
+              "type": "string",
+              "description": "The specific rhetorical choice identified"
+            },
+            "intended_effect": { 
+              "type": "string",
+              "description": "The intended effect or purpose of this choice"
+            },
+            "significance": { 
+              "type": "string",
+              "description": "Why this choice matters in context"
+            },
+            "text_evidence": { 
+              "type": "string",
+              "description": "Specific text evidence supporting this analysis"
+            }
+          },
+          "required": ["rhetorical_choice", "intended_effect", "significance", "text_evidence"]
+        }
+      },
+      "rhetorical_devices_identified": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "device_type": {
+              "type": "string",
+              "enum": ["alliteration", "anaphora", "antithesis", "chiasmus", "hyperbole", "irony", "metaphor", "metonymy", "parallelism", "personification", "rhetorical_question", "simile", "synecdoche", "understatement", "zeugma", "other"]
+            },
+            "device_name": { 
+              "type": "string",
+              "description": "Specific name of the rhetorical device"
+            },
+            "text_evidence": { 
+              "type": "string",
+              "description": "Direct quote or evidence from the text"
+            },
+            "analysis": { 
+              "type": "string",
+              "description": "Analysis of how this device contributes to author's purpose"
+            },
+            "effectiveness_rating": {
+              "type": "string",
+              "enum": ["highly_effective", "effective", "somewhat_effective", "ineffective"]
+            },
+            "line_number": { 
+              "type": "integer",
+              "description": "Approximate line number in the text"
+            }
+          },
+          "required": ["device_type", "device_name", "text_evidence", "analysis", "effectiveness_rating", "line_number"]
+        }
+      },
+      "revision_priorities": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Prioritized revision suggestions for improvement"
+      },
+      "vocabulary_strength": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "advanced_word_choices": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "repetitive_words": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "colloquialisms_or_informal_language": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["advanced_word_choices", "repetitive_words", "colloquialisms_or_informal_language"]
+      },
+      "writing_persona": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": { "type": "string" },
+          "description": { "type": "string" }
+        },
+        "required": ["type", "description"]
+      },
+      "sophistication_suggestions": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Specific suggestions for improving sophistication"
+      },
+      "teaching_blind_spots": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Areas where instruction may need focus"
+      },
+      "grammar_syntax_issues": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Grammar and syntax observations"
+      },
+      "rhetorical_appeals_used": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ethos": { "type": "string" },
+          "pathos": { "type": "string" },
+          "logos": { "type": "string" }
+        },
+        "required": ["ethos", "pathos", "logos"]
+      },
+      "next_instructional_focus": { 
+        "type": "string",
+        "description": "Recommended next steps for instruction"
+      }
+    },
+    "required": [
+      "overall_score",
+      "scores",
+      "overall_feedback",
+      "feedback",
+      "excerpts",
+      "rhetorical_line_of_reasoning",
+      "rhetorical_devices_identified",
+      "revision_priorities",
+      "vocabulary_strength",
+      "writing_persona",
+      "sophistication_suggestions",
+      "teaching_blind_spots",
+      "grammar_syntax_issues",
+      "rhetorical_appeals_used",
+      "next_instructional_focus"
+    ]
+  }
+} 

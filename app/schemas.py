@@ -472,4 +472,29 @@ class ProcessDebateAnalysisResponse(BaseModel):
 
     class Config:
         extra = "forbid"
-        strict = True 
+        strict = True
+
+# Debate Insights Schemas
+class GenerateDebateInsightsRequest(BaseModel):
+    class_id: int
+    assignment_id: int
+
+class CachedDebateInsightsRequest(BaseModel):
+    class_id: int
+    assignment_id: int
+
+class DebateInsightsResponse(BaseModel):
+    student_notes_summary: str
+    general_observations: str
+    teaching_recommendations: str
+
+class GenerateDebateInsightsResponse(BaseModel):
+    success: bool
+    insights: Optional[DebateInsightsResponse] = None
+    message: Optional[str] = None
+
+class CachedDebateInsightsResponse(BaseModel):
+    success: bool
+    has_data: bool
+    insights: Optional[DebateInsightsResponse] = None
+    message: Optional[str] = None 

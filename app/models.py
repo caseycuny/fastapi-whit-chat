@@ -3,6 +3,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Float, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from .db import Base
+from datetime import datetime
 
 class CustomUser(Base):
     __tablename__ = "jarvis_app_customuser"
@@ -98,8 +99,8 @@ class DebateTopic(Base):
     __tablename__ = "jarvis_app_debatetopic"
     id = Column(Integer, primary_key=True, index=True)
     teacher_id = Column(Integer, ForeignKey("jarvis_app_customuser.id"))
-    topic = Column(String)
-    created_at = Column(DateTime)
+    topic = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
 
@@ -110,7 +111,7 @@ class DebatePrompt(Base):
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
     text = Column(Text)
     is_ai_generated = Column(Boolean, default=True)
-    created_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class StudentDebate(Base):
     __tablename__ = "jarvis_app_studentdebate"
@@ -119,9 +120,9 @@ class StudentDebate(Base):
     prompt_id = Column(Integer, ForeignKey("jarvis_app_debateprompt.id"), nullable=True)
     topic_id = Column(Integer, ForeignKey("jarvis_app_debatetopic.id"), nullable=True)
     assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"), nullable=True)
-    chosen_side = Column(String)
+    chosen_side = Column(String(10))  # 'pro' or 'con'
     transcript = Column(Text)
-    submitted_at = Column(DateTime)
+    submitted_at = Column(DateTime, default=datetime.utcnow)
 
 class DebateAnalysis(Base):
     __tablename__ = "jarvis_app_debateanalysis"
@@ -129,25 +130,102 @@ class DebateAnalysis(Base):
     student_debate_id = Column(Integer, ForeignKey("jarvis_app_studentdebate.id"))
     transcript_text = Column(Text)
     overall_score = Column(Integer)
-    created_at = Column(DateTime)
-    updated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Bloom's level percentages
     remember_pct = Column(Float)
     understand_pct = Column(Float)
     apply_pct = Column(Float)
     analyze_pct = Column(Float)
     evaluate_pct = Column(Float)
     create_pct = Column(Float)
+    
+    # Debate score by category
     argument_quality = Column(Integer)
     critical_thinking = Column(Integer)
     rhetorical_skill = Column(Integer)
     responsiveness = Column(Integer)
     structure_clarity = Column(Integer)
     style_delivery = Column(Integer, nullable=True)
+    
+    # Additional metadata
     word_count = Column(Integer, default=0)
     speaking_time_seconds = Column(Integer, default=0)
     average_response_time = Column(Float, nullable=True)
     confidence_score = Column(Float, nullable=True)
-    # Indexes and Meta options are omitted
+    ai_feedback_summary = Column(Text, nullable=True)
+
+class PersuasiveAppeal(Base):
+    __tablename__ = "jarvis_app_persuasiveappeal"
+    id = Column(Integer, primary_key=True, index=True)
+    analysis_id = Column(Integer, ForeignKey("jarvis_app_debateanalysis.id"))
+    appeal_type = Column(String(20))  # 'ethos', 'pathos', 'logos'
+    count = Column(Integer)
+    example_snippets = Column(JSON, default=list)
+    effectiveness_score = Column(Integer, nullable=True)
+
+class RhetoricalDevice(Base):
+    __tablename__ = "jarvis_app_rhetoricaldevice"
+    id = Column(Integer, primary_key=True, index=True)
+    analysis_id = Column(Integer, ForeignKey("jarvis_app_debateanalysis.id"))
+    device_type = Column(String(50))
+    raw_label = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    count = Column(Integer)
+    example_snippets = Column(JSON, default=list)
+    effectiveness_score = Column(Integer, nullable=True)
+
+class ClasswideDebateData(Base):
+    __tablename__ = "jarvis_app_classwidedebatedata"
+    id = Column(Integer, primary_key=True, index=True)
+    class_instance_id = Column(Integer, ForeignKey("jarvis_app_class.id"))
+    assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
+    
+    # Performance metrics
+    total_debates_analyzed = Column(Integer, default=0)
+    overall_score_avg = Column(Float, nullable=True)
+    argument_quality_avg = Column(Float, nullable=True)
+    critical_thinking_avg = Column(Float, nullable=True)
+    rhetorical_skill_avg = Column(Float, nullable=True)
+    responsiveness_avg = Column(Float, nullable=True)
+    structure_clarity_avg = Column(Float, nullable=True)
+    
+    # Bloom's taxonomy averages
+    remember_pct_avg = Column(Float, nullable=True)
+    understand_pct_avg = Column(Float, nullable=True)
+    apply_pct_avg = Column(Float, nullable=True)
+    analyze_pct_avg = Column(Float, nullable=True)
+    evaluate_pct_avg = Column(Float, nullable=True)
+    create_pct_avg = Column(Float, nullable=True)
+    
+    # Debate metrics
+    word_count_avg = Column(Float, nullable=True)
+    speaking_time_avg = Column(Float, nullable=True)
+    response_time_avg = Column(Float, nullable=True)
+    confidence_score_avg = Column(Float, nullable=True)
+    
+    # Persuasive appeals and rhetorical devices (JSON)
+    persuasive_appeals_data = Column(JSON, default=dict)
+    rhetorical_devices_data = Column(JSON, default=list)
+    prompt_analytics = Column(JSON, default=dict)
+    
+    # AI-generated insights
+    student_notes_summary = Column(Text, nullable=True)
+    general_observations = Column(Text, nullable=True)
+    teaching_recommendations = Column(Text, nullable=True)
+    
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class DebateNoteToTeacher(Base):
+    __tablename__ = "jarvis_app_debatenotetoteacher"
+    id = Column(Integer, primary_key=True, index=True)
+    student_debate_id = Column(Integer, ForeignKey("jarvis_app_studentdebate.id"))
+    note = Column(Text)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
 
 class FeedbackCategory(Base):
     __tablename__ = "jarvis_app_feedbackcategory"

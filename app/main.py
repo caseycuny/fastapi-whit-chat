@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import OpenAI, AsyncOpenAI
 import os, time
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,12 @@ from .schemas import (
     ElaborationSummaryResponse,
     GenerateArgumentParagraphResponse,
     ElaborationModelSentencesResponse,
-    ProcessDebateAnalysisResponse
+    ProcessDebateAnalysisResponse,
+    GenerateDebateInsightsRequest,
+    CachedDebateInsightsRequest,
+    DebateInsightsResponse,
+    GenerateDebateInsightsResponse,
+    CachedDebateInsightsResponse
 )
 from .utils import extract_json_from_response
 from asgiref.sync import sync_to_async
@@ -183,6 +188,25 @@ logger = logging.getLogger(__name__)
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 DJANGO_API_BASE = os.getenv("DJANGO_API_BASE", "http://localhost:8000")
+
+def load_rubric(rubric_type: str) -> dict:
+    """Load a specific rubric from the Rubrics.json file"""
+    try:
+        # Get the path to the Rubrics.json file in the parent directory
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        rubrics_path = os.path.join(current_dir, "..", "Rubrics.json")
+        
+        with open(rubrics_path, 'r') as f:
+            rubrics_data = json.load(f)
+        
+        if rubric_type in rubrics_data["function"]:
+            return rubrics_data["function"][rubric_type]
+        else:
+            logger.error(f"Rubric type '{rubric_type}' not found in Rubrics.json")
+            return {}
+    except Exception as e:
+        logger.error(f"Error loading rubric '{rubric_type}': {str(e)}")
+        return {}
 
 def get_db():
     db = SessionLocal()
@@ -1709,11 +1733,24 @@ class ElaborationLessonPlanRequest(BaseModel):
     grade: str
     teacher_id: int
 
+# Add debate lesson plan request schema
+class DebateLessonPlanRequest(BaseModel):
+    class_id: int
+    assignment_id: int
+    grade: str
+    teacher_id: int
+
 class LessonPlanMaterialsRequest(BaseModel):
     lesson_plan: dict
     lesson_plan_id: Union[str, int]  # Accept both string temp_ids and int db_ids
 
 class ElaborationLessonPlanResponse(BaseModel):
+    lesson_plans: List[dict]
+    success: bool
+    message: Optional[str] = None
+
+# Add debate lesson plan response schema
+class DebateLessonPlanResponse(BaseModel):
     lesson_plans: List[dict]
     success: bool
     message: Optional[str] = None
@@ -2077,4 +2114,1412 @@ Key Design Principles:
         status_code=500, 
         detail=f"Failed to generate materials after {max_retries} attempts: {str(last_error)}"
     )
+
+async def get_classwide_debate_data(class_id: int, assignment_id: int, db: Session):
+    """Fetch classwide debate data from database for AI analysis - optimized for production PostgreSQL"""
+    try:
+        logger.info(f"Fetching classwide debate data for class {class_id}, assignment {assignment_id}")
+        
+        # Detect database type for optimal query selection
+        database_url = os.getenv("DATABASE_URL", "")
+        is_postgresql = database_url.startswith("postgresql://") or database_url.startswith("postgres://")
+        
+        if is_postgresql:
+            # PostgreSQL-optimized queries with STRING_AGG
+            logger.info("Using PostgreSQL-optimized queries with STRING_AGG")
+            
+            # Get aggregated debate metrics with AI feedback in single query
+            debate_metrics = db.execute(text("""
+                SELECT 
+                    COUNT(*) as total_debates,
+                    AVG(da.overall_score) as avg_overall_score,
+                    AVG(da.argument_quality) as avg_argument_quality,
+                    AVG(da.critical_thinking) as avg_critical_thinking,
+                    AVG(da.rhetorical_skill) as avg_rhetorical_skill,
+                    AVG(da.responsiveness) as avg_responsiveness,
+                    AVG(da.structure_clarity) as avg_structure_clarity,
+                    AVG(da.remember_pct) as avg_remember,
+                    AVG(da.understand_pct) as avg_understand,
+                    AVG(da.apply_pct) as avg_apply,
+                    AVG(da.analyze_pct) as avg_analyze,
+                    AVG(da.evaluate_pct) as avg_evaluate,
+                    AVG(da.create_pct) as avg_create,
+                    STRING_AGG(DISTINCT da.ai_feedback_summary, ' | ') as all_ai_feedback
+                FROM jarvis_app_studentdebate sd
+                JOIN jarvis_app_customuser u ON sd.student_id = u.id
+                LEFT JOIN jarvis_app_debateanalysis da ON da.student_debate_id = sd.id
+                WHERE sd.assignment_id = :assignment_id
+                AND sd.student_id IN (
+                    SELECT student_id FROM jarvis_app_class_students 
+                    WHERE class_id = :class_id
+                )
+                AND da.overall_score IS NOT NULL
+            """), {"class_id": class_id, "assignment_id": assignment_id})
+            
+            # Get aggregated persuasive appeals data with examples
+            appeals_data = db.execute(text("""
+                SELECT 
+                    pa.appeal_type,
+                    SUM(pa.count) as total_count,
+                    AVG(pa.effectiveness_score) as avg_effectiveness,
+                    STRING_AGG(DISTINCT pa.example_snippets::text, ' | ') as sample_examples
+                FROM jarvis_app_persuasiveappeal pa
+                JOIN jarvis_app_debateanalysis da ON pa.analysis_id = da.id
+                JOIN jarvis_app_studentdebate sd ON da.student_debate_id = sd.id
+                WHERE sd.assignment_id = :assignment_id
+                AND sd.student_id IN (
+                    SELECT student_id FROM jarvis_app_class_students 
+                    WHERE class_id = :class_id
+                )
+                GROUP BY pa.appeal_type
+                ORDER BY total_count DESC
+            """), {"class_id": class_id, "assignment_id": assignment_id})
+            
+            # Get aggregated rhetorical devices data with examples
+            devices_data = db.execute(text("""
+                SELECT 
+                    COALESCE(NULLIF(rd.device_type, 'other'), rd.raw_label) as device_name,
+                    SUM(rd.count) as total_count,
+                    AVG(rd.effectiveness_score) as avg_effectiveness,
+                    STRING_AGG(DISTINCT rd.example_snippets::text, ' | ') as sample_examples,
+                    rd.description
+                FROM jarvis_app_rhetoricaldevice rd
+                JOIN jarvis_app_debateanalysis da ON rd.analysis_id = da.id
+                JOIN jarvis_app_studentdebate sd ON da.student_debate_id = sd.id
+                WHERE sd.assignment_id = :assignment_id
+                AND sd.student_id IN (
+                    SELECT student_id FROM jarvis_app_class_students 
+                    WHERE class_id = :class_id
+                )
+                GROUP BY COALESCE(NULLIF(rd.device_type, 'other'), rd.raw_label), rd.description
+                ORDER BY total_count DESC
+                LIMIT 10
+            """), {"class_id": class_id, "assignment_id": assignment_id})
+            
+        else:
+            # SQLite-compatible queries (separate queries for aggregation)
+            logger.info("Using SQLite-compatible queries with separate aggregation")
+            
+            # Get aggregated debate metrics (without STRING_AGG for SQLite compatibility)
+            debate_metrics = db.execute(text("""
+                SELECT 
+                    COUNT(*) as total_debates,
+                    AVG(da.overall_score) as avg_overall_score,
+                    AVG(da.argument_quality) as avg_argument_quality,
+                    AVG(da.critical_thinking) as avg_critical_thinking,
+                    AVG(da.rhetorical_skill) as avg_rhetorical_skill,
+                    AVG(da.responsiveness) as avg_responsiveness,
+                    AVG(da.structure_clarity) as avg_structure_clarity,
+                    AVG(da.remember_pct) as avg_remember,
+                    AVG(da.understand_pct) as avg_understand,
+                    AVG(da.apply_pct) as avg_apply,
+                    AVG(da.analyze_pct) as avg_analyze,
+                    AVG(da.evaluate_pct) as avg_evaluate,
+                    AVG(da.create_pct) as avg_create
+                FROM jarvis_app_studentdebate sd
+                JOIN jarvis_app_customuser u ON sd.student_id = u.id
+                LEFT JOIN jarvis_app_debateanalysis da ON da.student_debate_id = sd.id
+                WHERE sd.assignment_id = :assignment_id
+                AND sd.student_id IN (
+                    SELECT student_id FROM jarvis_app_class_students 
+                    WHERE class_id = :class_id
+                )
+                AND da.overall_score IS NOT NULL
+            """), {"class_id": class_id, "assignment_id": assignment_id})
+            
+            # Get aggregated persuasive appeals data (without STRING_AGG for SQLite compatibility)
+            appeals_data = db.execute(text("""
+                SELECT 
+                    pa.appeal_type,
+                    SUM(pa.count) as total_count,
+                    AVG(pa.effectiveness_score) as avg_effectiveness
+                FROM jarvis_app_persuasiveappeal pa
+                JOIN jarvis_app_debateanalysis da ON pa.analysis_id = da.id
+                JOIN jarvis_app_studentdebate sd ON da.student_debate_id = sd.id
+                WHERE sd.assignment_id = :assignment_id
+                AND sd.student_id IN (
+                    SELECT student_id FROM jarvis_app_class_students 
+                    WHERE class_id = :class_id
+                )
+                GROUP BY pa.appeal_type
+                ORDER BY total_count DESC
+            """), {"class_id": class_id, "assignment_id": assignment_id})
+            
+            # Get aggregated rhetorical devices data (without STRING_AGG for SQLite compatibility)
+            devices_data = db.execute(text("""
+                SELECT 
+                    COALESCE(NULLIF(rd.device_type, 'other'), rd.raw_label) as device_name,
+                    SUM(rd.count) as total_count,
+                    AVG(rd.effectiveness_score) as avg_effectiveness,
+                    rd.description
+                FROM jarvis_app_rhetoricaldevice rd
+                JOIN jarvis_app_debateanalysis da ON rd.analysis_id = da.id
+                JOIN jarvis_app_studentdebate sd ON da.student_debate_id = sd.id
+                WHERE sd.assignment_id = :assignment_id
+                AND sd.student_id IN (
+                    SELECT student_id FROM jarvis_app_class_students 
+                    WHERE class_id = :class_id
+                )
+                GROUP BY COALESCE(NULLIF(rd.device_type, 'other'), rd.raw_label), rd.description
+                ORDER BY total_count DESC
+                LIMIT 10
+            """), {"class_id": class_id, "assignment_id": assignment_id})
+        
+        metrics = debate_metrics.fetchone()
+        
+        if not metrics or metrics.total_debates == 0:
+            raise ValueError("No debate data found for this class and assignment")
+        
+        # Get DebateNoteToTeacher summaries
+        notes_data = db.execute(text("""
+            SELECT 
+                dntt.note,
+                dntt.created_at
+            FROM jarvis_app_debatenotetoteacher dntt
+            JOIN jarvis_app_studentdebate sd ON dntt.student_debate_id = sd.id
+            WHERE sd.assignment_id = :assignment_id
+            AND sd.student_id IN (
+                SELECT student_id FROM jarvis_app_class_students 
+                WHERE class_id = :class_id
+            )
+            ORDER BY dntt.created_at DESC
+        """), {"class_id": class_id, "assignment_id": assignment_id})
+        
+        notes = notes_data.fetchall()
+        appeals = appeals_data.fetchall()
+        devices = devices_data.fetchall()
+        
+        # Get prompt analytics
+        prompts_data = db.execute(text("""
+            SELECT 
+                dp.text as prompt_text,
+                sd.chosen_side,
+                COUNT(*) as usage_count
+            FROM jarvis_app_debateprompt dp
+            JOIN jarvis_app_studentdebate sd ON sd.prompt_id = dp.id
+            WHERE sd.assignment_id = :assignment_id
+            AND sd.student_id IN (
+                SELECT student_id FROM jarvis_app_class_students 
+                WHERE class_id = :class_id
+            )
+            GROUP BY dp.text, sd.chosen_side
+            ORDER BY usage_count DESC
+        """), {"class_id": class_id, "assignment_id": assignment_id})
+        
+        prompts = prompts_data.fetchall()
+        
+        # Process AI feedback summaries based on database type
+        if is_postgresql and hasattr(metrics, 'all_ai_feedback') and metrics.all_ai_feedback:
+            # PostgreSQL: Use STRING_AGG result
+            all_ai_feedback = [
+                feedback.strip() for feedback in metrics.all_ai_feedback.split(" | ")
+                if feedback and feedback.strip()
+            ]
+        else:
+            # SQLite: Get AI feedback summaries separately
+            ai_feedback_data = db.execute(text("""
+                SELECT DISTINCT da.ai_feedback_summary
+                FROM jarvis_app_studentdebate sd
+                JOIN jarvis_app_customuser u ON sd.student_id = u.id
+                LEFT JOIN jarvis_app_debateanalysis da ON da.student_debate_id = sd.id
+                WHERE sd.assignment_id = :assignment_id
+                AND sd.student_id IN (
+                    SELECT student_id FROM jarvis_app_class_students 
+                    WHERE class_id = :class_id
+                )
+                AND da.ai_feedback_summary IS NOT NULL
+                AND da.ai_feedback_summary != ''
+            """), {"class_id": class_id, "assignment_id": assignment_id})
+            
+            ai_feedback_rows = ai_feedback_data.fetchall()
+            all_ai_feedback = [
+                row.ai_feedback_summary.strip() for row in ai_feedback_rows
+                if row.ai_feedback_summary and row.ai_feedback_summary.strip()
+            ]
+        
+        feedback_count_to_include = max(1, int(len(all_ai_feedback) * 0.75))  # At least 1, but 75% of total
+        
+        # Structure the optimized data for AI analysis
+        structured_data = {
+            "class_id": class_id,
+            "assignment_id": assignment_id,
+            "total_debates": int(metrics.total_debates),
+            "overall_metrics": {
+                "avg_overall_score": round(float(metrics.avg_overall_score or 0), 1),
+                "avg_argument_quality": round(float(metrics.avg_argument_quality or 0), 1),
+                "avg_critical_thinking": round(float(metrics.avg_critical_thinking or 0), 1),
+                "avg_rhetorical_skill": round(float(metrics.avg_rhetorical_skill or 0), 1),
+                "avg_responsiveness": round(float(metrics.avg_responsiveness or 0), 1),
+                "avg_structure_clarity": round(float(metrics.avg_structure_clarity or 0), 1),
+                "bloom_averages": {
+                    "remember_avg": round(float(metrics.avg_remember or 0), 1),
+                    "understand_avg": round(float(metrics.avg_understand or 0), 1),
+                    "apply_avg": round(float(metrics.avg_apply or 0), 1),
+                    "analyze_avg": round(float(metrics.avg_analyze or 0), 1),
+                    "evaluate_avg": round(float(metrics.avg_evaluate or 0), 1),
+                    "create_avg": round(float(metrics.avg_create or 0), 1)
+                }
+            },
+            "ai_feedback_summaries": all_ai_feedback[:feedback_count_to_include],  # Include 75% of all AI feedback summaries
+            "debate_notes_to_teacher": [
+                {"note": note.note, "date": note.created_at.strftime("%Y-%m-%d") if hasattr(note.created_at, 'strftime') else str(note.created_at)}
+                for note in notes
+            ],  # Include ALL notes to teacher
+            "persuasive_appeals_summary": {
+                appeal.appeal_type: {
+                    "total_count": int(appeal.total_count),
+                    "avg_effectiveness": round(float(appeal.avg_effectiveness or 0), 1),
+                    "sample_examples": [ex.strip() for ex in (getattr(appeal, 'sample_examples', '') or '').split(' | ') if ex.strip()][:3] if is_postgresql else []
+                }
+                for appeal in appeals
+            },
+            "rhetorical_devices_summary": {
+                device.device_name: {
+                    "total_count": int(device.total_count),
+                    "avg_effectiveness": round(float(device.avg_effectiveness or 0), 1),
+                    "description": device.description or "",
+                    "sample_examples": [ex.strip() for ex in (getattr(device, 'sample_examples', '') or '').split(' | ') if ex.strip()][:3] if is_postgresql else []
+                }
+                for device in devices
+            },
+            "prompt_analytics": {
+                "most_popular_prompts": [
+                    {"prompt": p.prompt_text, "usage_count": p.usage_count, "side": p.chosen_side}
+                    for p in prompts[:5]
+                ],
+                "pro_percentage": round(
+                    sum(p.usage_count for p in prompts if p.chosen_side == 'pro') / 
+                    sum(p.usage_count for p in prompts) * 100 if prompts else 0, 1
+                ),
+                "con_percentage": round(
+                    sum(p.usage_count for p in prompts if p.chosen_side == 'con') / 
+                    sum(p.usage_count for p in prompts) * 100 if prompts else 0, 1
+                )
+            }
+        }
+        
+        logger.info(f"Successfully structured optimized classwide debate data: {metrics.total_debates} debates using {'PostgreSQL' if is_postgresql else 'SQLite'} queries")
+        return structured_data
+        
+    except Exception as e:
+        logger.error(f"Error fetching classwide debate data: {e}")
+        raise
+
+async def debate_insights_generation_api(class_id: int, assignment_id: int, debate_data: dict) -> dict:
+    """Generate AI insights for debate data using OpenAI Assistant"""
+    print(f"[DEBUG] debate_insights_generation_api called with class_id={class_id}, assignment_id={assignment_id}")
+    
+    # Get the debate analyzer assistant ID
+    assistant_id = os.getenv("DEBATE_ANALYZER_ID")
+    if not assistant_id:
+        print("[DEBUG] DEBATE_ANALYZER_ID not found in environment variables")
+        raise ValueError("DEBATE_ANALYZER_ID not found in environment variables")
+    
+    print(f"[DEBUG] Using debate analyzer assistant ID: {assistant_id}")
+    print(f"[DEBUG] Prepared debate data keys: {list(debate_data.keys())}")
+    
+    # Create prompt for debate insights generation
+    prompt = f"""
+Based on the following classwide debate analysis data, provide comprehensive insights for the teacher.
+
+Class Analysis Data:
+{json.dumps(debate_data, indent=2)}
+
+You MUST use the provided tool 'generate_classwide_debate_insights' and return ONLY a JSON object with the following structure:
+
+{{
+  "student_notes_summary": "Summary of student notes to teacher about their key takeaways",
+  "general_observations": "Broader observations about class debate skills, trends in argumentation, rhetorical devices, persuasive appeals, and critical thinking levels",
+  "teaching_recommendations": "Specific, actionable teaching recommendations in bullet format addressing identified patterns"
+}}
+
+Focus on:
+- Overall performance trends and patterns
+- Effective use of persuasive appeals (ethos, pathos, logos)
+- Rhetorical device usage and effectiveness
+- Bloom's taxonomy distribution and critical thinking levels
+- Areas where students excel vs. areas needing improvement
+- Specific instructional strategies to address gaps
+
+Provide insights that are practical, specific, and immediately actionable for a teacher planning their next lessons.
+"""
+    
+    print(f"[DEBUG] Created prompt for OpenAI (length: {len(prompt)})")
+    
+    # Create thread
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+    print(f"[DEBUG] Created new thread: {thread_id}")
+    
+    # Send message to thread
+    print("[DEBUG] Sending message to OpenAI...")
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=prompt
+    )
+    
+    # Start the run with explicit tool choice
+    print("[DEBUG] Starting OpenAI run...")
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+        tool_choice={
+            "type": "function",
+            "function": {
+                "name": "generate_classwide_debate_insights"
+            }
+        }
+    )
+    
+    print(f"[DEBUG] Run created with ID: {run.id}")
+    
+    # Wait for completion and handle function calls (following lesson plan pattern)
+    insights_data = {}
+    start_time = time.time()
+    timeout = 180
+    
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id
+        )
+        
+        print(f"[DEBUG] Run status: {run_status.status}")
+        
+        if run_status.status == 'requires_action':
+            print("🛠️ Processing function call...")
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            
+            tool_outputs = []
+            for tool_call in tool_calls:
+                if tool_call.function.name == "generate_classwide_debate_insights":
+                    try:
+                        insights_data = json.loads(tool_call.function.arguments)
+                        print(f"[DEBUG] Processed debate insights: {list(insights_data.keys())}")
+                        tool_outputs.append({
+                            "tool_call_id": tool_call.id,
+                            "output": json.dumps(insights_data)
+                        })
+                    except json.JSONDecodeError as e:
+                        print(f"❌ Error parsing debate insights JSON: {e}")
+                        raise ValueError(f"Invalid JSON in debate insights format: {str(e)}")
+            
+            if tool_outputs:
+                print("[DEBUG] Submitting tool outputs...")
+                await client.beta.threads.runs.submit_tool_outputs(
+                    thread_id=thread_id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+                
+        elif run_status.status == 'completed':
+            print("✅ Run completed")
+            break
+            
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            print(f"❌ Run {run_status.status}")
+            raise Exception(f"Run {run_status.status}")
+            
+        if time.time() - start_time > timeout:
+            print("❌ Run timed out")
+            raise TimeoutError("Debate insights generation timed out")
+            
+        await asyncio.sleep(2)
+    
+    if not insights_data:
+        print("❌ No insights data returned from assistant.")
+        raise ValueError("No debate insights generated")
+    
+    print(f"[DEBUG] Generated debate insights with keys: {list(insights_data.keys())}")
+    return insights_data
+
+@app.get("/api/get-cached-debate-insights/")
+async def get_cached_debate_insights(class_id: int, assignment_id: int, db: Session = Depends(get_db)):
+    """Check if AI insights are already cached in the database"""
+    try:
+        logger.info(f"Checking cached debate insights for class {class_id}, assignment {assignment_id}")
+        
+        # Query the ClasswideDebateData table for existing insights
+        result = db.execute(text("""
+            SELECT student_notes_summary, general_observations, teaching_recommendations
+            FROM jarvis_app_classwidedebatedata 
+            WHERE class_instance_id = :class_id AND assignment_id = :assignment_id
+            LIMIT 1
+        """), {"class_id": class_id, "assignment_id": assignment_id})
+        
+        row = result.fetchone()
+        
+        if row and row.student_notes_summary and row.general_observations and row.teaching_recommendations:
+            # We have cached insights
+            insights = DebateInsightsResponse(
+                student_notes_summary=row.student_notes_summary,
+                general_observations=row.general_observations,
+                teaching_recommendations=row.teaching_recommendations
+            )
+            
+            return CachedDebateInsightsResponse(
+                success=True,
+                has_data=True,
+                insights=insights,
+                message="Cached insights found"
+            )
+        else:
+            # No cached insights
+            return CachedDebateInsightsResponse(
+                success=True,
+                has_data=False,
+                insights=None,
+                message="No cached insights found"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error checking cached debate insights: {str(e)}")
+        return CachedDebateInsightsResponse(
+            success=False,
+            has_data=False,
+            insights=None,
+            message=f"Error checking cached insights: {str(e)}"
+        )
+
+async def get_validated_debate_insights(class_id: int, assignment_id: int, debate_data: dict) -> dict:
+    """Generate debate insights with validation and retries"""
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Validation attempt {attempt + 1} of {max_retries} for debate insights")
+            
+            # Generate insights using the API
+            insights_data = await debate_insights_generation_api(
+                class_id, 
+                assignment_id, 
+                debate_data
+            )
+            
+            # Validate the response structure
+            if not isinstance(insights_data, dict):
+                raise ValueError("Response is not a dictionary")
+            
+            required_fields = ["student_notes_summary", "general_observations", "teaching_recommendations"]
+            for field in required_fields:
+                if field not in insights_data:
+                    raise ValueError(f"Missing required field: {field}")
+                if not isinstance(insights_data[field], str):
+                    raise ValueError(f"Field {field} must be a string")
+                if not insights_data[field].strip():
+                    raise ValueError(f"Field {field} cannot be empty")
+            
+            # Validate with Pydantic
+            validated = DebateInsightsResponse(**insights_data)
+            return insights_data
+            
+        except (ValueError, ValidationError) as e:
+            logger.error(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid debate insights after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(2)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+@app.post("/api/generate-debate-insights/")
+async def generate_debate_insights(request: GenerateDebateInsightsRequest, db: Session = Depends(get_db)):
+    """Generate new AI insights for debate data (read-only, JavaScript will save to Django)"""
+    try:
+        logger.info(f"Generating debate insights for class {request.class_id}, assignment {request.assignment_id}")
+        
+        # Fetch classwide debate data
+        debate_data = await get_classwide_debate_data(request.class_id, request.assignment_id, db)
+        
+        # Generate and validate AI insights
+        insights_data = await get_validated_debate_insights(
+            request.class_id, 
+            request.assignment_id, 
+            debate_data
+        )
+        
+        # Return the validated insights (JavaScript will save to Django)
+        insights = DebateInsightsResponse(
+            student_notes_summary=insights_data["student_notes_summary"],
+            general_observations=insights_data["general_observations"],
+            teaching_recommendations=insights_data["teaching_recommendations"]
+        )
+        
+        return GenerateDebateInsightsResponse(
+            success=True,
+            insights=insights,
+            message="Successfully generated debate insights"
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (they already have proper error handling)
+        raise
+    except Exception as e:
+        logger.error(f"Error in generate_debate_insights: {str(e)}")
+        return GenerateDebateInsightsResponse(
+            success=False,
+            insights=None,
+            message=f"Error generating insights: {str(e)}"
+        )
+
+async def debate_lesson_plan_generation_api(class_id: int, assignment_id: int, grade: str, debate_analysis: dict) -> List[dict]:
+    """Generate lesson plans using OpenAI Assistant based on classwide debate analysis"""
+    print(f"[DEBUG] debate_lesson_plan_generation_api called with class_id={class_id}, assignment_id={assignment_id}, grade={grade}")
+
+    # Get the teaching-specific assistant ID
+    teaching_assistant_id = os.getenv("LESSON_PLAN_MAKER_ID")
+    if not teaching_assistant_id:
+        print("[DEBUG] LESSON_PLAN_MAKER_ID not found in environment variables")
+        raise ValueError("Teaching Assistant ID not found in environment variables")
+
+    print(f"[DEBUG] Using teaching assistant ID: {teaching_assistant_id}")
+    print(f"[DEBUG] Prepared debate analysis: {json.dumps(debate_analysis, indent=2)}")
+
+    # Create prompt for lesson plan generation based on debate data
+    prompt = f"""
+Based on the following classwide debate analysis for a {grade} grade class, design exactly 2 unique and distinct lesson plans that address the identified strengths and areas for improvement in debate skills.
+
+Class Debate Analysis:
+{json.dumps(debate_analysis, indent=2)}
+
+Please create exactly 2 different lesson plans that:
+1. Build on the strongest debate skills students are already demonstrating
+2. Address areas where students need improvement (argument quality, critical thinking, rhetorical skill, responsiveness, structure & clarity)
+3. Incorporate effective persuasive appeals and rhetorical devices that students are using well
+4. Address gaps in Bloom's taxonomy levels that need development
+5. Use student debate notes and feedback to inform instruction
+6. Is appropriate for {grade} grade level
+
+Focus on practical debate skills like:
+- Constructing stronger arguments with evidence
+- Improving critical thinking and analysis
+- Developing rhetorical effectiveness
+- Enhancing responsiveness to opposing arguments
+- Building clear structure and organization
+- Advancing students through higher-order thinking (Bloom's taxonomy)
+
+IMPORTANT: Generate exactly 2 distinct lesson plans with different titles and focus areas. Do not repeat lesson plans.
+
+You must use the lesson_plan_format function exactly 2 times to structure your response.
+"""
+
+    print(f"[DEBUG] Created prompt for OpenAI")
+
+    # Create thread
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+    print(f"[DEBUG] Created new thread: {thread_id}")
+
+    # Send message to thread
+    print("[DEBUG] Sending message to OpenAI...")
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=prompt
+    )
+
+    # Start the run with explicit tool choice
+    print("[DEBUG] Starting OpenAI run...")
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=teaching_assistant_id,
+        tool_choice={
+            "type": "function",
+            "function": {
+                "name": "lesson_plan_format"
+            }
+        }
+    )
+
+    print(f"[DEBUG] Run created with ID: {run.id}")
+
+    # Wait for completion and handle function calls (following teach_with_whit pattern)
+    lesson_plans = []
+    start_time = time.time()
+    timeout = 90  # Reduced timeout since we're generating only 2 lesson plans
+
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id
+        )
+        
+        print(f"[DEBUG] Run status: {run_status.status}")
+        
+        if run_status.status == 'requires_action':
+            print("🛠️ Processing function call...")
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            
+            tool_outputs = []
+            for tool_call in tool_calls:
+                if tool_call.function.name == "lesson_plan_format":
+                    try:
+                        plan_data = json.loads(tool_call.function.arguments)
+                        lesson_plans.append(plan_data)
+                        print(f"[DEBUG] Processed lesson plan: {plan_data.get('title', 'Untitled')}")
+                        tool_outputs.append({
+                            "tool_call_id": tool_call.id,
+                            "output": json.dumps(plan_data)
+                        })
+                    except json.JSONDecodeError as e:
+                        print(f"❌ Error parsing lesson plan JSON: {e}")
+                        raise ValueError(f"Invalid JSON in lesson plan format: {str(e)}")
+            
+            if tool_outputs:
+                print("[DEBUG] Submitting tool outputs...")
+                await client.beta.threads.runs.submit_tool_outputs(
+                    thread_id=thread_id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+                
+        elif run_status.status == 'completed':
+            print("✅ Run completed")
+            break
+            
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            print(f"❌ Run {run_status.status}")
+            raise Exception(f"Run {run_status.status}")
+            
+        if time.time() - start_time > timeout:
+            print("❌ Run timed out")
+            raise TimeoutError("Lesson plan generation timed out")
+            
+        # Adaptive polling: start with shorter intervals, increase gradually
+        elapsed = time.time() - start_time
+        if elapsed < 10:
+            await asyncio.sleep(1)  # Check every 1 second for first 10 seconds
+        elif elapsed < 30:
+            await asyncio.sleep(2)  # Check every 2 seconds for next 20 seconds
+        else:
+            await asyncio.sleep(3)  # Check every 3 seconds after 30 seconds
+
+    if not lesson_plans:
+        print("❌ No lesson plans returned from assistant.")
+        raise ValueError("No lesson plans generated")
+
+    # Remove duplicates based on title
+    unique_plans = []
+    seen_titles = set()
+    for plan in lesson_plans:
+        title = plan.get('title', '').strip()
+        if title and title not in seen_titles:
+            seen_titles.add(title)
+            unique_plans.append(plan)
+    
+    print(f"[DEBUG] Generated {len(lesson_plans)} lesson plan(s), {len(unique_plans)} unique")
+    return unique_plans
+
+@app.post("/api/debate/lesson-plans", response_model=DebateLessonPlanResponse)
+async def generate_debate_lesson_plans(request: DebateLessonPlanRequest, db: Session = Depends(get_db)):
+    """Generate lesson plans based on classwide debate analysis with retry logic"""
+    print(f"[DEBUG] generate_debate_lesson_plans called with: {request}")
+    
+    try:
+        # Fetch classwide debate data
+        debate_analysis = await get_classwide_debate_data(request.class_id, request.assignment_id, db)
+        
+        # Try to generate lesson plans with retry logic
+        max_retries = 2
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"[DEBUG] Attempt {attempt + 1} of {max_retries}")
+                lesson_plans = await debate_lesson_plan_generation_api(
+                    request.class_id, 
+                    request.assignment_id, 
+                    request.grade,
+                    debate_analysis
+                )
+                
+                # Add unique IDs for frontend reference
+                for i, plan in enumerate(lesson_plans):
+                    plan['temp_id'] = f"temp_{request.class_id}_{request.assignment_id}_{i}_{int(time.time())}"
+                
+                return DebateLessonPlanResponse(
+                    lesson_plans=lesson_plans,
+                    success=True,
+                    message=f"Successfully generated {len(lesson_plans)} lesson plan(s)"
+                )
+                
+            except Exception as e:
+                last_error = e
+                print(f"[DEBUG] Attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)  # Wait before retry
+                    continue
+        
+        # If all retries failed
+        print(f"[DEBUG] All attempts failed. Last error: {str(last_error)}")
+        import traceback
+        print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate lesson plans: {str(last_error)}")
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate lesson plans: {str(e)}")
+
+# Add FRQ schemas and dynamic routing endpoint
+class FRQRequest(BaseModel):
+    subject: str
+    essay_text: str
+    prompt: str
+    user_id: int
+    assignment_id: Optional[int] = None
+
+class GrammarAndSyntaxIssues(BaseModel):
+    common_errors: List[str] = Field(default_factory=list)
+    examples: List[str] = Field(default_factory=list)
+    suggested_fixes: List[str] = Field(default_factory=list)
+
+class APLangArgumentResponse(BaseModel):
+    overall_score: int
+    scores: Dict[str, int]
+    overall_feedback: str
+    feedback: Dict[str, Any]
+    excerpts: List[Dict[str, str]]
+    revision_priorities: List[str]
+    vocabulary_strength: Dict[str, Any]
+    writing_persona: Dict[str, str]
+    sophistication_suggestions: List[str]
+    instructional_blind_spots: List[str]
+    grammar_and_syntax_issues: GrammarAndSyntaxIssues
+    rhetorical_appeals_used: Dict[str, str]
+    next_instructional_focus: List[str]
+
+class APLangRhetoricalResponse(BaseModel):
+    overall_score: int
+    scores: Dict[str, int]
+    overall_feedback: str
+    feedback: Dict[str, Any]
+    excerpts: List[Dict[str, str]]
+    rhetorical_line_of_reasoning: List[Dict[str, str]]
+    rhetorical_devices_identified: List[Dict[str, Any]]
+    revision_priorities: List[str]
+    vocabulary_strength: Dict[str, Any]
+    writing_persona: Dict[str, str]
+    sophistication_suggestions: List[str]
+    instructional_blind_spots: List[str]
+    grammar_and_syntax_issues: GrammarAndSyntaxIssues
+    rhetorical_appeals_used: Dict[str, str]
+    next_instructional_focus: List[str]
+
+class FRQResponse(BaseModel):
+    success: bool
+    subject: str
+    data: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+async def ap_lang_argument_analysis_api(essay_text: str, prompt: str) -> tuple[dict, str]:
+    """
+    Calls OpenAI Assistant for AP Language Argumentative essay analysis, handles tool call, and returns validated output with thread ID.
+    Returns: (analysis_data, thread_id)
+    """
+    assistant_id = os.getenv("AP_LANG_FRQ_TUTOR_ID")
+    if not assistant_id:
+        raise HTTPException(status_code=500, detail="AP_LANG_FRQ_TUTOR_ID not set in environment variables.")
+
+    # Load the AP Lang Argument rubric
+    rubric = load_rubric("AP Lang Argument")
+    
+    # Compose prompt for AP Language Argumentative essay analysis
+    analysis_prompt = f"""
+You are an expert AP Language and Composition teacher specializing in argumentative essay analysis. 
+Analyze the following student essay based on the EXACT AP Language Argumentative essay rubric provided below.
+
+OFFICIAL AP LANG ARGUMENT RUBRIC:
+{json.dumps(rubric, indent=2)}
+
+Essay Prompt: {prompt}
+
+Student Essay:
+{essay_text}
+
+You MUST use the provided tool 'ap_lang_argument_feedback' and return ONLY the structured JSON object. 
+
+CRITICAL INSTRUCTIONS:
+- Grade STRICTLY according to the rubric criteria provided above
+- Use the exact point values specified in the rubric (Thesis: 0-1, Evidence/Commentary: 0-4, Sophistication: 0-1)
+- Reference specific rubric criteria in your feedback
+- Ensure your scoring aligns with the detailed criteria for each point level
+
+Focus on:
+- Thesis quality and defensibility (0-1 points) - does it present a defensible position?
+- Evidence selection and commentary (0-4 points) - quality of evidence and explanation
+- Sophistication of thought and understanding (0-1 points) - complex understanding of rhetorical situation
+- Specific feedback for each rubric category based on the criteria
+- Exemplar sentences that demonstrate strong evidence/commentary and sophistication
+- Prioritized revision suggestions
+- Analysis of rhetorical appeals (ethos, pathos, logos)
+- Vocabulary and writing style assessment
+- Grammar and syntax observations
+- Teaching blind spots and next instructional focus
+
+Provide detailed, constructive feedback that helps the student improve their argumentative writing skills according to AP standards.
+"""
+
+    # Create thread and send message
+    thread = await client.beta.threads.create()
+    thread_id = thread.id
+    
+    await client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=analysis_prompt
+    )
+
+    # Start run with tool choice
+    run = await client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+        tool_choice={"type": "function", "function": {"name": "ap_lang_argument_feedback"}}
+    )
+
+    # Wait for completion and handle tool call
+    start_time = datetime.now()
+    timeout_seconds = 180
+    
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+        
+        if run_status.status == 'requires_action':
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            tool_outputs = []
+            for tc in tool_calls:
+                if tc.function.name == "ap_lang_argument_feedback":
+                    tool_outputs.append({
+                        "tool_call_id": tc.id,
+                        "output": tc.function.arguments
+                    })
+            
+            if tool_outputs:
+                run = await client.beta.threads.runs.submit_tool_outputs(
+                    thread_id=thread_id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+                
+        elif run_status.status == 'completed':
+            break
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+        
+        if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+            await client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
+            raise HTTPException(status_code=504, detail="Request timed out")
+        
+        await asyncio.sleep(1)
+
+    # Fetch thread messages and extract tool call output from assistant's message
+    messages = await client.beta.threads.messages.list(thread_id=thread_id)
+    for msg in messages.data:
+        if msg.role == 'assistant':
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'tool_calls':
+                    for tool_call in getattr(content, 'tool_calls', []):
+                        if getattr(tool_call.function, 'name', None) == "ap_lang_argument_feedback":
+                            return json.loads(tool_call.function.arguments), thread_id
+            # Fallback: try to parse text as JSON if tool_calls not found
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'text':
+                    try:
+                        return json.loads(content.text.value), thread_id
+                    except Exception:
+                        continue
+    
+    raise HTTPException(status_code=500, detail="No valid tool call output found in assistant's message.")
+
+async def get_validated_ap_lang_argument_analysis(essay_text: str, prompt: str) -> dict:
+    """
+    Analyze an AP Language Argumentative essay, validate output, and retry up to 2 times if needed.
+    Returns: {"data": validated_data, "thread_id": thread_id}
+    """
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"AP Lang analysis attempt {attempt + 1} of {max_retries}")
+            
+            response_data, thread_id = await ap_lang_argument_analysis_api(essay_text, prompt)
+            print(f"DEBUG: Raw OpenAI response: {response_data}")
+            print(f"DEBUG: Thread ID: {thread_id}")
+            
+            # The response should already be a dict from tool call arguments
+            if isinstance(response_data, str):
+                try:
+                    data = json.loads(response_data)
+                    print(f"DEBUG: Parsed JSON data: {data}")
+                except Exception as e:
+                    print(f"DEBUG: JSON parse error, raw string: {response_data}")
+                    raise
+            else:
+                data = response_data
+                print(f"DEBUG: Data is already a dict: {data}")
+            
+            # Validate with Pydantic
+            validated = APLangArgumentResponse(**data)
+            print(f"DEBUG: Pydantic validated data: {validated}")
+            return {
+                "data": validated.dict(),
+                "thread_id": thread_id
+            }
+            
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid AP Lang analysis after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(2)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+async def handle_ap_lang_argument(request: FRQRequest) -> dict:
+    """Handle AP Language Argumentative essay analysis"""
+    try:
+        logger.info(f"Processing AP Lang Argumentative essay for user {request.user_id}")
+        
+        # Validate required fields
+        if not request.essay_text or not request.essay_text.strip():
+            raise HTTPException(status_code=400, detail="Essay text is required")
+        if not request.prompt or not request.prompt.strip():
+            raise HTTPException(status_code=400, detail="Essay prompt is required")
+        
+        # Get validated analysis (this will return both analysis data and thread_id)
+        analysis_result = await get_validated_ap_lang_argument_analysis(
+            request.essay_text, 
+            request.prompt
+        )
+        
+        return {
+            "success": True,
+            "subject": request.subject,
+            "data": analysis_result["data"],
+            "thread_id": analysis_result["thread_id"],
+            "message": "Successfully analyzed AP Language Argumentative essay"
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error in handle_ap_lang_argument: {str(e)}")
+        return {
+            "success": False,
+            "subject": request.subject,
+            "data": None,
+            "thread_id": None,
+            "message": f"Error analyzing essay: {str(e)}"
+        }
+
+async def handle_ap_lang_rhetorical(request: FRQRequest) -> dict:
+    """Handle AP Language Rhetorical Analysis essay analysis"""
+    try:
+        logger.info(f"Processing AP Lang Rhetorical Analysis essay for user {request.user_id}")
+        
+        # Validate required fields
+        if not request.essay_text or not request.essay_text.strip():
+            raise HTTPException(status_code=400, detail="Essay text is required")
+        if not request.prompt or not request.prompt.strip():
+            raise HTTPException(status_code=400, detail="Essay prompt is required")
+        
+        # Get validated analysis
+        analysis_data = await get_validated_ap_lang_rhetorical_analysis(
+            request.essay_text, 
+            request.prompt
+        )
+        
+        return {
+            "success": True,
+            "subject": request.subject,
+            "data": analysis_data,
+            "message": "Successfully analyzed AP Language Rhetorical Analysis essay"
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error in handle_ap_lang_rhetorical: {str(e)}")
+        return {
+            "success": False,
+            "subject": request.subject,
+            "data": None,
+            "message": f"Error analyzing essay: {str(e)}"
+        }
+
+async def handle_apush_dbq(request: FRQRequest) -> dict:
+    """Handle APUSH DBQ analysis (placeholder for future implementation)"""
+    return {
+        "success": False,
+        "subject": request.subject,
+        "data": None,
+        "message": "APUSH DBQ analysis not yet implemented"
+    }
+
+async def handle_ap_psych(request: FRQRequest) -> dict:
+    """Handle AP Psychology FRQ analysis (placeholder for future implementation)"""
+    return {
+        "success": False,
+        "subject": request.subject,
+        "data": None,
+        "message": "AP Psychology FRQ analysis not yet implemented"
+    }
+
+@app.post("/api/frq/submit/", response_model=FRQResponse)
+async def submit_frq(request: FRQRequest):
+    """
+    Dynamic routing endpoint for FRQ submissions across different AP subjects.
+    Routes to appropriate handler based on subject type.
+    """
+    try:
+        logger.info(f"FRQ submission received for subject: {request.subject}")
+        
+        # Validate subject
+        if not request.subject:
+            raise HTTPException(status_code=400, detail="Subject is required")
+        
+        # Dynamic routing based on subject
+        if request.subject == "ap_lang_argument":
+            result = await handle_ap_lang_argument(request)
+        elif request.subject == "ap_lang_rhetorical":
+            result = await handle_ap_lang_rhetorical(request)
+        elif request.subject == "apush_dbq":
+            result = await handle_apush_dbq(request)
+        elif request.subject == "ap_psych":
+            result = await handle_ap_psych(request)
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unsupported subject: {request.subject}. Supported subjects: ap_lang_argument, ap_lang_rhetorical, apush_dbq, ap_psych"
+            )
+        
+        return FRQResponse(**result)
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error in submit_frq: {str(e)}")
+        return FRQResponse(
+            success=False,
+            subject=request.subject,
+            data=None,
+            message=f"Unexpected error: {str(e)}"
+        )
+
+async def ap_lang_rhetorical_analysis_api(essay_text: str, prompt: str) -> dict:
+    """
+    Calls OpenAI Assistant for AP Language Rhetorical Analysis essay analysis, handles tool call, and returns validated output.
+    """
+    assistant_id = os.getenv("AP_LANG_RHETORICAL_TUTOR_ID")
+    if not assistant_id:
+        raise HTTPException(status_code=500, detail="AP_LANG_RHETORICAL_TUTOR_ID not set in environment variables.")
+
+    # Load the AP Lang Rhetorical Analysis rubric
+    rubric = load_rubric("AP Lang Rhetorical Anal")
+    
+    # Compose prompt for AP Language Rhetorical Analysis essay analysis
+    analysis_prompt = f"""
+You are an expert AP Language and Composition teacher specializing in rhetorical analysis essay evaluation. 
+Analyze the following student essay based on the EXACT AP Language Rhetorical Analysis essay rubric provided below.
+
+OFFICIAL AP LANG RHETORICAL ANALYSIS RUBRIC:
+{json.dumps(rubric, indent=2)}
+
+Essay Prompt: {prompt}
+
+Student Essay:
+{essay_text}
+
+You MUST use the provided tool 'ap_lang_rhetorical_feedback' and return ONLY the structured JSON object. 
+
+CRITICAL INSTRUCTIONS:
+- Grade STRICTLY according to the rubric criteria provided above
+- Use the exact point values specified in the rubric (Thesis: 0-1, Evidence/Commentary: 0-4, Sophistication: 0-1)
+- Reference specific rubric criteria in your feedback
+- Ensure your scoring aligns with the detailed criteria for each point level
+
+Focus on:
+- Thesis quality and defensibility (0-1 points) - does it analyze the writer's rhetorical choices?
+- Evidence selection and commentary on rhetorical choices (0-4 points) - explains how rhetorical choices contribute to argument/purpose
+- Sophistication of thought and understanding (0-1 points) - complex understanding of rhetorical situation
+- Specific feedback for each rubric category based on the criteria
+- Rhetorical line of reasoning mapping (choice → effect → significance)
+- Identification and analysis of rhetorical devices
+- Prioritized revision suggestions
+- Analysis of rhetorical appeals (ethos, pathos, logos)
+- Vocabulary and writing style assessment
+- Grammar and syntax observations
+- Teaching blind spots and next instructional focus
+
+Provide detailed, constructive feedback that helps the student improve their rhetorical analysis writing skills according to AP standards.
+"""
+
+    # Create thread and send message
+    thread = await client.beta.threads.create()
+    await client.beta.threads.messages.create(
+        thread_id=thread.id,
+        role="user",
+        content=analysis_prompt
+    )
+
+    # Start run with tool choice
+    run = await client.beta.threads.runs.create(
+        thread_id=thread.id,
+        assistant_id=assistant_id,
+        tool_choice={"type": "function", "function": {"name": "ap_lang_rhetorical_feedback"}}
+    )
+
+    # Wait for completion and handle tool call
+    start_time = datetime.now()
+    timeout_seconds = 180
+    
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+        
+        if run_status.status == 'requires_action':
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            tool_outputs = []
+            for tc in tool_calls:
+                if tc.function.name == "ap_lang_rhetorical_feedback":
+                    tool_outputs.append({
+                        "tool_call_id": tc.id,
+                        "output": tc.function.arguments
+                    })
+            
+            if tool_outputs:
+                run = await client.beta.threads.runs.submit_tool_outputs(
+                    thread_id=thread.id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+                
+        elif run_status.status == 'completed':
+            break
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+        
+        if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+            await client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+            raise HTTPException(status_code=504, detail="Request timed out")
+        
+        await asyncio.sleep(1)
+
+    # Fetch thread messages and extract tool call output from assistant's message
+    messages = await client.beta.threads.messages.list(thread_id=thread.id)
+    for msg in messages.data:
+        if msg.role == 'assistant':
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'tool_calls':
+                    for tool_call in getattr(content, 'tool_calls', []):
+                        if getattr(tool_call.function, 'name', None) == "ap_lang_rhetorical_feedback":
+                            return json.loads(tool_call.function.arguments)
+            # Fallback: try to parse text as JSON if tool_calls not found
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'text':
+                    try:
+                        return json.loads(content.text.value)
+                    except Exception:
+                        continue
+    
+    raise HTTPException(status_code=500, detail="No valid tool call output found in assistant's message.")
+
+async def get_validated_ap_lang_rhetorical_analysis(essay_text: str, prompt: str) -> dict:
+    """
+    Analyze an AP Language Rhetorical Analysis essay, validate output, and retry up to 2 times if needed.
+    """
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"AP Lang Rhetorical analysis attempt {attempt + 1} of {max_retries}")
+            
+            response_data = await ap_lang_rhetorical_analysis_api(essay_text, prompt)
+            print(f"DEBUG: Raw OpenAI response: {response_data}")
+            
+            # The response should already be a dict from tool call arguments
+            if isinstance(response_data, str):
+                try:
+                    data = json.loads(response_data)
+                    print(f"DEBUG: Parsed JSON data: {data}")
+                except Exception as e:
+                    print(f"DEBUG: JSON parse error, raw string: {response_data}")
+                    raise
+            else:
+                data = response_data
+                print(f"DEBUG: Data is already a dict: {data}")
+            
+            # Validate with Pydantic
+            validated = APLangRhetoricalResponse(**data)
+            print(f"DEBUG: Pydantic validated data: {validated}")
+            return validated.dict()
+            
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Validation failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to get valid AP Lang Rhetorical analysis after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(2)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+
+# Add FRQ3 prompt generation endpoint
+class FRQ3PromptRequest(BaseModel):
+    class_id: int
+    due_date: str
+    due_time: str
+
+class FRQ3PromptResponse(BaseModel):
+    success: bool
+    prompts: Optional[List[Dict[str, str]]] = None
+    message: Optional[str] = None
+
+@app.post("/api/ap_lang_frq3_prompt_maker/", response_model=FRQ3PromptResponse)
+async def ap_lang_frq3_prompt_maker(request: FRQ3PromptRequest):
+    """
+    Generate 3 AP Language FRQ3 Argumentative prompts using OpenAI Assistant.
+    Uses the AP_LANG_ARGUMENT_PROMPT_MAKER_ID assistant with AP Lang Sample Prompts FRQ3 vector store.
+    """
+    try:
+        logger.info(f"Generating FRQ3 prompts for class {request.class_id}")
+        
+        # Get the assistant ID from environment
+        assistant_id = os.getenv("AP_LANG_ARGUMENT_PROMPT_MAKER_ID")
+        if not assistant_id:
+            raise HTTPException(status_code=500, detail="AP_LANG_ARGUMENT_PROMPT_MAKER_ID not configured")
+        
+        # Create a thread for this request
+        thread = await client.beta.threads.create()
+        
+        # Send the prompt generation request
+        prompt_message = """Please create three new prompts for AP Language and Composition FRQ 3 (Argumentative Essay) using the vector store as your context and reference. 
+
+Each prompt should:
+1. Be appropriate for AP Language and Composition students
+2. Focus on argumentative writing skills
+3. Include a clear thesis/position statement
+4. Be engaging and relevant to current issues or timeless topics
+
+Please format your response as a JSON array with exactly 3 prompts, each having:
+- "title": A concise title/thesis statement (max 100 characters)
+- "prompt": The full argumentative prompt text
+
+Example format:
+[
+  {
+    "title": "Technology's Impact on Human Connection",
+    "prompt": "In an age where digital communication dominates our interactions..."
+  },
+  {
+    "title": "The Role of Failure in Success",
+    "prompt": "Many successful individuals attribute their achievements to lessons learned from failure..."
+  },
+  {
+    "title": "Individual vs. Collective Responsibility",
+    "prompt": "Consider the balance between personal accountability and societal obligation..."
+  }
+]"""
+        
+        # Add message to thread
+        await client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=prompt_message
+        )
+        
+        # Run the assistant
+        run = await client.beta.threads.runs.create(
+            thread_id=thread.id,
+            assistant_id=assistant_id
+        )
+        
+        # Wait for completion
+        max_attempts = 30
+        attempt = 0
+        while attempt < max_attempts:
+            run_status = await client.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+            
+            if run_status.status == "completed":
+                break
+            elif run_status.status in ["failed", "cancelled", "expired"]:
+                raise HTTPException(status_code=500, detail=f"Assistant run failed: {run_status.status}")
+            
+            await asyncio.sleep(1)
+            attempt += 1
+        
+        if attempt >= max_attempts:
+            raise HTTPException(status_code=500, detail="Assistant run timed out")
+        
+        # Get the response
+        messages = await client.beta.threads.messages.list(thread_id=thread.id)
+        assistant_message = None
+        
+        for message in messages.data:
+            if message.role == "assistant":
+                assistant_message = message.content[0].text.value
+                break
+        
+        if not assistant_message:
+            raise HTTPException(status_code=500, detail="No response from assistant")
+        
+        # Parse the JSON response
+        try:
+            # Extract JSON from the response (in case there's extra text)
+            json_start = assistant_message.find('[')
+            json_end = assistant_message.rfind(']') + 1
+            if json_start != -1 and json_end != -1:
+                json_text = assistant_message[json_start:json_end]
+                prompts = json.loads(json_text)
+            else:
+                # Try to parse the entire response as JSON
+                prompts = json.loads(assistant_message)
+            
+            # Validate the structure
+            if not isinstance(prompts, list) or len(prompts) != 3:
+                raise ValueError("Expected exactly 3 prompts")
+            
+            for prompt in prompts:
+                if not isinstance(prompt, dict) or 'title' not in prompt or 'prompt' not in prompt:
+                    raise ValueError("Each prompt must have 'title' and 'prompt' fields")
+            
+            logger.info(f"Successfully generated {len(prompts)} FRQ3 prompts")
+            
+            return FRQ3PromptResponse(
+                success=True,
+                prompts=prompts,
+                message="Successfully generated FRQ3 prompts"
+            )
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse assistant response: {str(e)}")
+            logger.error(f"Assistant response: {assistant_message}")
+            raise HTTPException(status_code=500, detail="Failed to parse assistant response")
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error in ap_lang_frq3_prompt_maker: {str(e)}")
+        return FRQ3PromptResponse(
+            success=False,
+            prompts=None,
+            message=f"Error generating prompts: {str(e)}"
+        )
 

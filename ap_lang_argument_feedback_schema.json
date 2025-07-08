@@ -1,0 +1,173 @@
+{
+  "name": "ap_lang_argument_feedback",
+  "description": "Structured feedback for an AP Lang Argumentative essay based on the 6-point rubric",
+  "strict": true,
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "overall_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 6,
+        "description": "Total score out of 6 points for AP Language Argumentative essay"
+      },
+      "scores": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "thesis": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Thesis score (0-1 points)"
+          },
+          "evidence_commentary": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "description": "Evidence and Commentary score (0-4 points)"
+          },
+          "sophistication": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Sophistication score (0-1 points)"
+          }
+        },
+        "required": ["thesis", "evidence_commentary", "sophistication"]
+      },
+      "overall_feedback": {
+        "type": "string",
+        "description": "Comprehensive overall feedback on the argumentative essay"
+      },
+      "feedback": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "enum": ["thesis", "evidence_commentary", "sophistication"]
+                },
+                "score": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4
+                },
+                "strengths": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "areas_for_improvement": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["name", "score", "strengths", "areas_for_improvement"]
+            }
+          }
+        },
+        "required": ["categories"]
+      },
+      "excerpts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": { "type": "string" },
+            "comment": { "type": "string" },
+            "category": {
+              "type": "string",
+              "enum": ["evidence_commentary", "sophistication", "thesis", "general"]
+            }
+          },
+          "required": ["text", "comment", "category"]
+        }
+      },
+      "revision_priorities": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Prioritized revision suggestions for improvement"
+      },
+      "vocabulary_strength": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "advanced_word_choices": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "repetitive_words": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "colloquialisms_or_informal_language": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["advanced_word_choices", "repetitive_words", "colloquialisms_or_informal_language"]
+      },
+      "writing_persona": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": { "type": "string" },
+          "description": { "type": "string" }
+        },
+        "required": ["type", "description"]
+      },
+      "sophistication_suggestions": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Specific suggestions for improving sophistication"
+      },
+      "teaching_blind_spots": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Areas where instruction may need focus"
+      },
+      "grammar_syntax_issues": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Grammar and syntax observations"
+      },
+      "rhetorical_appeals_used": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ethos": { "type": "string" },
+          "pathos": { "type": "string" },
+          "logos": { "type": "string" }
+        },
+        "required": ["ethos", "pathos", "logos"]
+      },
+      "next_instructional_focus": { 
+        "type": "string",
+        "description": "Recommended next steps for instruction"
+      }
+    },
+    "required": [
+      "overall_score",
+      "scores",
+      "overall_feedback",
+      "feedback",
+      "excerpts",
+      "revision_priorities",
+      "vocabulary_strength",
+      "writing_persona",
+      "sophistication_suggestions",
+      "teaching_blind_spots",
+      "grammar_syntax_issues",
+      "rhetorical_appeals_used",
+      "next_instructional_focus"
+    ]
+  }
+} 
