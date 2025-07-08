@@ -11,3 +11,4 @@ asgiref>=3.5.2
 sqlalchemy
 psycopg2-binary
 websockets
+beautifulsoup4
