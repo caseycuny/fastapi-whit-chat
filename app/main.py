@@ -52,12 +52,27 @@ app = FastAPI()
 frontend_origins = os.getenv("FRONTEND_ORIGINS", "").split(",")
 
 # Add dev URLs for local testing if not already included
-for origin in ["http://localhost:8000", "http://127.0.0.1:8000"]:
-    if origin not in frontend_origins:
-        frontend_origins.append(origin)
+dev_origins = [
+    "http://localhost:8000", 
+    "http://127.0.0.1:8000",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
 
-# Clean up any empty strings (in case env was empty)
-frontend_origins = [origin.strip() for origin in frontend_origins if origin.strip()]
+# Add common production URLs
+prod_origins = [
+    "https://jarvis-ai-tutor.onrender.com",
+    "https://jarvis-ai-tutor-production.up.railway.app",
+    "https://jarvis-ai-tutor.herokuapp.com"
+]
+
+# Combine all origins
+all_origins = frontend_origins + dev_origins + prod_origins
+
+# Clean up any empty strings and remove duplicates
+frontend_origins = list(set([origin.strip() for origin in all_origins if origin.strip()]))
+
+print(f"DEBUG: CORS allowed origins: {frontend_origins}")
 
 # Apply middleware
 app.add_middleware(
@@ -179,6 +194,29 @@ class ElaborationModelSentencesRequest(BaseModel):
     topic: str
     user_id: int
     assignment_id: Optional[int] = None
+
+# Add new Pydantic models for rhetorical device practice
+class RhetoricalDeviceInitRequest(BaseModel):
+    last_debate_topic: str
+    student_id: int
+    assignment_id: Optional[int] = None
+
+class RhetoricalDeviceProgressRequest(BaseModel):
+    thread_id: str
+    student_id: int
+    assignment_id: Optional[int] = None
+
+class DevicePracticed(BaseModel):
+    device_name: str
+    occurrences: int
+    effectiveness_comment: str
+
+class RhetoricalDeviceProgressResponse(BaseModel):
+    success: bool
+    devices_practiced: List[DevicePracticed]
+    overall_feedback: str
+    suggested_focus: List[str]
+    message: Optional[str] = None
 
 # Add logging configuration
 logging.basicConfig(level=logging.INFO)
@@ -529,6 +567,17 @@ async def get_trend_data(assignment_id: int) -> dict:
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.get("/test-cors")
+async def test_cors(request: Request):
+    """Test endpoint to debug CORS issues"""
+    return {
+        "status": "ok",
+        "origin": request.headers.get("origin"),
+        "host": request.headers.get("host"),
+        "user-agent": request.headers.get("user-agent"),
+        "allowed-origins": frontend_origins
+    }
 
 async def handle_run_completion(thread_id: str, run_id: str, timeout: int = 120) -> str:
     """
@@ -1599,6 +1648,159 @@ async def websocket_debate(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+
+@app.websocket("/ws/rhetorical-device-practice")
+async def websocket_rhetorical_device_practice(websocket: WebSocket):
+    print("[DEBUG] WebSocket connection attempt received for /ws/rhetorical-device-practice")
+    await websocket.accept()
+    thread_id = None
+    assistant_id = os.getenv("RHETORICAL_DEVICE_TUTOR_ID")
+    print(f"[DEBUG] RHETORICAL_DEVICE_TUTOR_ID: {assistant_id}")
+
+    if not assistant_id:
+        print("[DEBUG] RHETORICAL_DEVICE_TUTOR_ID not configured")
+        await websocket.send_json({
+            "type": "error", 
+            "data": {"message": "RHETORICAL_DEVICE_TUTOR_ID not configured"}
+        })
+        await websocket.close()
+        return
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            print(f"[DEBUG] Received data: {data}")
+            msg_type = data.get("type")
+            if msg_type == "init":
+                # Extract data from the nested structure
+                init_data = data.get("data", {})
+                last_debate_topic = init_data.get("last_debate_topic")
+                student_id = init_data.get("student_id")
+                
+                if not last_debate_topic:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "data": {"message": "Missing last debate topic"}
+                    })
+                    continue
+                
+                # Create thread
+                thread = await client.beta.threads.create()
+                thread_id = thread.id
+                
+                # Create initial system message but don't run the assistant yet
+                system_message = (
+                    f"You are a rhetorical device tutor helping a student practice using different rhetorical techniques. "
+                    f"The student's last debate topic was: '{last_debate_topic}'. "
+                    f"When the student tells you which rhetorical device they want to practice, immediately jump into teaching that specific device. "
+                    f"Provide a clear definition, give an example related to their debate topic, and then ask them to create their own example. "
+                    f"Do not give a generic introduction or list all devices unless they ask for options. "
+                    f"Ask questions in your last two sentences to help guide their thinking and get them started on crafting a sentence using the device. "
+                    f"Be encouraging and provide specific feedback on their attempts. "
+                    f"***MODEL OUTPUT EXAMPLE: "
+                    f"User: I want to learn about Anaphora "
+                    f"GPT: Excellent choice! "
+                    f"Anaphora is a rhetorical device that involves repeating the same word or phrase at the beginning of successive clauses or sentences. This creates emphasis and can make your argument more memorable and persuasive. "
+                    f"Example related to your debate topic: "
+                    f"Lincoln inspired a divided nation. Lincoln confronted the horrors of slavery. Lincoln redefined what freedom meant for every American. "
+                    f"Now, it's your turn! Try writing two or three sentences about Lincoln that begin with the same word or phrase to emphasize your point. "
+                    f"What word would impact the audience in an anaphora style? What point or ideal do you want to emphasize or add importance to? "
+                )
+                
+                await client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role="user",
+                    content=system_message
+                )
+                
+                # Just send thread_id back to client - don't run the assistant yet
+                await websocket.send_json({
+                    "type": "thread_created",
+                    "data": {"thread_id": thread_id}
+                })
+
+            elif msg_type == "message":
+                if not thread_id:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "data": {"message": "Session not initialized"}
+                    })
+                    continue
+                
+                # Extract message from the nested structure
+                message_data = data.get("data", {})
+                user_message = message_data.get("content")
+                if not user_message:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "data": {"message": "Missing message content"}
+                    })
+                    continue
+                
+                # Add user message to thread
+                await client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role="user",
+                    content=user_message
+                )
+                
+                # Stream the response
+                response_stream = await client.beta.threads.runs.create(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    stream=True
+                )
+                
+                full_message = ""
+                async for chunk in response_stream:
+                    if (hasattr(chunk, 'data') and 
+                        hasattr(chunk.data, 'delta') and 
+                        hasattr(chunk.data.delta, 'content')):
+                        
+                        token = chunk.data.delta.content
+                        if isinstance(token, list):
+                            parts = []
+                            for content_block in token:
+                                if (hasattr(content_block, 'text') and 
+                                    hasattr(content_block.text, 'value') and 
+                                    content_block.text.value is not None):
+                                    parts.append(str(content_block.text.value))
+                                elif (hasattr(content_block, 'text') and 
+                                      isinstance(content_block.text, str)):
+                                    parts.append(content_block.text)
+                                elif (hasattr(content_block, 'value') and 
+                                      content_block.value is not None):
+                                    parts.append(str(content_block.value))
+                                elif isinstance(content_block, str):
+                                    parts.append(content_block)
+                                else:
+                                    parts.append(str(content_block))
+                            token = ''.join(parts)
+                        
+                        full_message += token
+                        await websocket.send_json({
+                            "type": "token",
+                            "data": {"role": "assistant", "content": token}
+                        })
+                
+                await websocket.send_json({
+                    "type": "message",
+                    "data": {"role": "assistant", "content": full_message}
+                })
+
+            elif msg_type == "end":
+                await websocket.close()
+                break
+                
+            else:
+                await websocket.send_json({
+                    "type": "error", 
+                    "data": {"message": f"Unknown message type: {msg_type}"}
+                })
+                
+    except Exception as e:
+        print(f"[DEBUG] WebSocket error: {e}")
+        await websocket.close()
 
 async def debate_analysis_api(transcript: list) -> dict:
     """
@@ -2869,6 +3071,206 @@ async def generate_debate_lesson_plans(request: DebateLessonPlanRequest, db: Ses
         print(f"[DEBUG] Full traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to generate lesson plans: {str(e)}")
 
+async def rhetorical_device_progress_analysis_api(thread_id: str) -> dict:
+    """
+    Analyzes a rhetorical device practice session and returns structured progress data.
+    Uses OpenAI Assistant with function calling for consistent output format.
+    """
+    assistant_id = os.getenv("RHETORICAL_DEVICE_ANALYZER_ID")
+    if not assistant_id:
+        raise HTTPException(status_code=500, detail="RHETORICAL_DEVICE_ANALYZER_ID not configured")
+    
+    # Get the conversation from the thread
+    messages = await client.beta.threads.messages.list(thread_id=thread_id, order="asc")
+    
+    # Format the conversation for analysis
+    conversation = []
+    for msg in messages.data:
+        if msg.role in ["user", "assistant"]:
+            conversation.append({
+                "role": msg.role,
+                "content": msg.content[0].text.value if msg.content else ""
+            })
+    
+    # Create analysis prompt
+    analysis_prompt = f"""
+    Analyze the following rhetorical device practice session and provide structured feedback.
+    
+    You MUST use the provided tool 'rhetorical_device_analysis' and return ONLY a JSON object with this structure:
+    {{
+        "devices_practiced": [
+            {{
+                "device_name": "metaphor",
+                "occurrences": 2,
+                "effectiveness_comment": "Used metaphors effectively to create vivid imagery"
+            }},
+            {{
+                "device_name": "rhetorical_question",
+                "occurrences": 1,
+                "effectiveness_comment": "Good use of rhetorical question to engage the audience"
+            }}
+        ],
+        "overall_feedback": "You showed great improvement in using metaphors effectively. Your rhetorical questions were engaging and helped strengthen your argument. Continue practicing with anaphora to create more powerful emphasis.",
+        "suggested_focus": ["anaphora", "parallelism", "hyperbole"]
+    }}
+    
+    Focus on:
+    - Which rhetorical devices the student actually attempted to use and how many times
+    - How effectively they used each device
+    - Constructive overall feedback on their progress
+    - Suggested devices to practice next
+    
+    Conversation:
+    {conversation}
+    """
+    
+    # Create new thread for analysis
+    analysis_thread = await client.beta.threads.create()
+    await client.beta.threads.messages.create(
+        thread_id=analysis_thread.id,
+        role="user",
+        content=analysis_prompt
+    )
+    
+    # Run analysis with tool choice
+    run = await client.beta.threads.runs.create(
+        thread_id=analysis_thread.id,
+        assistant_id=assistant_id,
+        tool_choice={
+            "type": "function",
+            "function": {"name": "rhetorical_device_analysis"}
+        }
+    )
+    
+    # Wait for completion and handle tool call
+    start_time = datetime.now()
+    timeout_seconds = 120
+    
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(
+            thread_id=analysis_thread.id,
+            run_id=run.id
+        )
+        
+        if run_status.status == 'requires_action':
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            tool_outputs = []
+            for tc in tool_calls:
+                if tc.function.name == "rhetorical_device_analysis":
+                    tool_outputs.append({
+                        "tool_call_id": tc.id,
+                        "output": tc.function.arguments
+                    })
+            
+            if tool_outputs:
+                run = await client.beta.threads.runs.submit_tool_outputs(
+                    thread_id=analysis_thread.id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+                continue
+                
+        elif run_status.status == 'completed':
+            break
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            raise HTTPException(status_code=500, detail=f"Analysis run {run_status.status}")
+        
+        if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+            await client.beta.threads.runs.cancel(thread_id=analysis_thread.id, run_id=run.id)
+            raise HTTPException(status_code=504, detail="Analysis timed out")
+        
+        await asyncio.sleep(1)
+    
+    # Extract the analysis result
+    analysis_messages = await client.beta.threads.messages.list(thread_id=analysis_thread.id)
+    for msg in analysis_messages.data:
+        if msg.role == 'assistant':
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'tool_calls':
+                    for tool_call in getattr(content, 'tool_calls', []):
+                        if getattr(tool_call.function, 'name', None) == "rhetorical_device_analysis":
+                            return json.loads(tool_call.function.arguments)
+    
+    raise HTTPException(status_code=500, detail="No analysis result found")
+
+@app.post("/api/rhetorical-device-progress/", response_model=RhetoricalDeviceProgressResponse)
+async def analyze_rhetorical_device_progress(request: RhetoricalDeviceProgressRequest):
+    """
+    Analyzes a rhetorical device practice session and returns structured progress data.
+    This endpoint is called when the student clicks "Track My Progress".
+    """
+    return await _analyze_rhetorical_device_progress_impl(request)
+
+@app.post("/api/rhetorical-device-progress", response_model=RhetoricalDeviceProgressResponse)
+async def analyze_rhetorical_device_progress_no_slash(request: RhetoricalDeviceProgressRequest):
+    """
+    Same as above but without trailing slash to handle both URL formats
+    """
+    return await _analyze_rhetorical_device_progress_impl(request)
+
+async def _analyze_rhetorical_device_progress_impl(request: RhetoricalDeviceProgressRequest):
+    try:
+        logger.info(f"Analyzing rhetorical device progress for thread {request.thread_id}")
+        
+        # Validate thread_id
+        if not request.thread_id:
+            raise HTTPException(status_code=400, detail="Thread ID is required")
+        
+        # Get analysis from OpenAI
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                analysis_data = await rhetorical_device_progress_analysis_api(request.thread_id)
+                
+                # Validate the response structure
+                if not isinstance(analysis_data, dict):
+                    raise ValueError("Analysis response is not a dictionary")
+                
+                required_fields = ["devices_practiced", "overall_feedback", "suggested_focus"]
+                for field in required_fields:
+                    if field not in analysis_data:
+                        raise ValueError(f"Missing required field: {field}")
+                
+                # Validate devices_practiced structure
+                devices_practiced = []
+                for device in analysis_data["devices_practiced"]:
+                    devices_practiced.append(DevicePracticed(**device))
+                
+                # Validate with Pydantic
+                validated = RhetoricalDeviceProgressResponse(
+                    success=True,
+                    devices_practiced=devices_practiced,
+                    overall_feedback=analysis_data["overall_feedback"],
+                    suggested_focus=analysis_data["suggested_focus"],
+                    message="Successfully analyzed rhetorical device progress"
+                )
+                
+                return validated
+                
+            except (ValueError, json.JSONDecodeError) as e:
+                logger.error(f"Analysis validation failed on attempt {attempt+1}: {e}")
+                if attempt == max_retries - 1:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Failed to get valid analysis after {max_retries} attempts: {str(e)}"
+                    )
+                await asyncio.sleep(2)
+        
+        raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error in analyze_rhetorical_device_progress: {str(e)}")
+        return RhetoricalDeviceProgressResponse(
+            success=False,
+            devices_practiced=[],
+            overall_feedback="",
+            suggested_focus=[],
+            message=f"Error analyzing progress: {str(e)}"
+        )
+
 # Add FRQ schemas and dynamic routing endpoint
 class FRQRequest(BaseModel):
     subject: str
@@ -3522,4 +3924,6 @@ Example format:
             prompts=None,
             message=f"Error generating prompts: {str(e)}"
         )
+
+
 
