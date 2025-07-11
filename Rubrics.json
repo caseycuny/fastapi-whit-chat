@@ -454,84 +454,498 @@
         }
       }
     }
-  }
   },
-  "argumentative": {
-    "description": "Argumentative Essay Rubric",
-    "full_text": "This rubric evaluates argumentative essays based on claim, evidence, reasoning, and organization.",
+  "WHIT Argumentative/Explanatory (9-12)": {
+    "name": "WHIT Argumentative/Explanatory Rubric (Grades 9-12)",
+    "description": "High school writing rubric for argumentative or explanatory essays, aligned to Common Core and AP standards.",
+    "full_text": "This rubric evaluates student writing based on thesis/focus, evidence and development, organization and cohesion, and expression and conventions.",
     "categories": {
-      "claim": {
-        "name": "Claim",
-        "max_points": 2,
-        "description": "Clear, specific, and arguable claim"
+      "thesis_focus": {
+        "name": "Thesis / Focus",
+        "description": "Clarity and strength of the central claim (argument) or controlling idea (explanation)",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Establishes a precise, insightful, and consistently maintained thesis or controlling idea.",
+            "Shows originality or depth in framing the topic."
+          ],
+          "3": [
+            "Presents a clear and appropriate thesis or focus that is maintained with minor lapses.",
+            "Clearly addresses the task."
+          ],
+          "2": [
+            "Thesis or focus is present but vague, underdeveloped, or inconsistently maintained."
+          ],
+          "1": [
+            "Lacks a clear central idea or claim.",
+            "May be off-topic or unfocused."
+          ]
+        }
       },
-      "evidence": {
-        "name": "Evidence",
-        "max_points": 3,
-        "description": "Relevant and sufficient evidence to support the claim"
+      "evidence_development": {
+        "name": "Evidence and Development",
+        "description": "Use of evidence, elaboration, and analysis to support ideas",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Provides relevant, specific, and well-integrated evidence.",
+            "Analysis is insightful and thoughtful.",
+            "In arguments, addresses counterclaims effectively."
+          ],
+          "3": [
+            "Offers relevant and sufficient evidence with some explanation or reasoning.",
+            "Attempts counterclaim acknowledgment in arguments."
+          ],
+          "2": [
+            "Evidence is minimal, vague, or uneven.",
+            "Little elaboration.",
+            "Counterclaims may be weak or missing."
+          ],
+          "1": [
+            "Lacks sufficient or relevant evidence.",
+            "No meaningful elaboration or analysis.",
+            "Counterclaims absent."
+          ]
+        }
       },
-      "reasoning": {
-        "name": "Reasoning",
-        "max_points": 3,
-        "description": "Logical reasoning that connects evidence to claim"
+      "organization_cohesion": {
+        "name": "Organization and Cohesion",
+        "description": "Logical sequencing, transitions, and paragraph structure",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Demonstrates clear and strategic organization.",
+            "Paragraphs flow logically with effective transitions and strong cohesion."
+          ],
+          "3": [
+            "Shows overall clear organization with some effective transitions.",
+            "Generally cohesive."
+          ],
+          "2": [
+            "Inconsistent or unclear structure.",
+            "Transitions may be basic or missing.",
+            "Flow may be uneven."
+          ],
+          "1": [
+            "Disorganized or hard to follow.",
+            "No clear paragraphing or transitions."
+          ]
+        }
       },
-      "organization": {
-        "name": "Organization",
-        "max_points": 2,
-        "description": "Clear structure and logical flow"
+      "expression_conventions": {
+        "name": "Expression and Conventions",
+        "description": "Style, tone, vocabulary, sentence fluency, and correctness",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Demonstrates precise word choice, confident voice, and varied sentence structures.",
+            "Few, if any, grammatical or mechanical errors.",
+            "Voice suits purpose and audience."
+          ],
+          "3": [
+            "Maintains a clear and appropriate tone.",
+            "Vocabulary and sentences are adequate.",
+            "Minor errors may be present but don’t impede clarity."
+          ],
+          "2": [
+            "Limited variety in word choice or sentence fluency.",
+            "Style may be flat or inconsistent.",
+            "Frequent errors may disrupt flow."
+          ],
+          "1": [
+            "Inappropriate tone, weak vocabulary, and numerous grammar/spelling errors that affect readability."
+          ]
+        }
       }
     }
   },
-  "narrative": {
-    "description": "Narrative Essay Rubric",
-    "full_text": "This rubric evaluates narrative essays based on plot, character development, setting, and style.",
-    "categories": {
-      "plot": {
-        "name": "Plot",
-        "max_points": 3,
-        "description": "Engaging plot with clear beginning, middle, and end"
+  "WHIT Narrative Rubric (9-12)": {
+    "name": "WHIT Narrative Rubric (9-12)",
+    "total_points": 16,
+    "rows": {
+      "focus_purpose": {
+        "name": "Narrative Focus and Purpose",
+        "description": "Clarity and depth of theme, message, or storytelling purpose",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Establishes a compelling and insightful narrative focus or theme.",
+            "Writing has a clear purpose and sustains reader interest throughout."
+          ],
+          "3": [
+            "Establishes a clear narrative focus.",
+            "Purpose is evident and mostly sustained."
+          ],
+          "2": [
+            "Somewhat unclear or inconsistent focus.",
+            "Theme or purpose may be vague or fade over time."
+          ],
+          "1": [
+            "No clear narrative purpose or theme.",
+            "Lacks coherence or focus."
+          ]
+        }
       },
-      "characters": {
-        "name": "Characters",
-        "max_points": 2,
-        "description": "Well-developed characters with clear motivations"
+      "character_plot_setting": {
+        "name": "Development of Characters, Setting, and Plot",
+        "description": "Development and interaction of narrative elements",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Fully develops believable characters, vivid settings, and a well-structured plot.",
+            "Events unfold logically with attention to pacing and rising action."
+          ],
+          "3": [
+            "Develops characters, setting, and plot with some depth.",
+            "Plot structure is generally clear and events mostly connect."
+          ],
+          "2": [
+            "Limited development of characters or setting.",
+            "Plot may be basic, rushed, or disjointed."
+          ],
+          "1": [
+            "Underdeveloped or confusing characters/plot/setting.",
+            "Narrative elements may be missing or incomplete."
+          ]
+        }
       },
-      "setting": {
-        "name": "Setting",
-        "max_points": 2,
-        "description": "Vivid and appropriate setting"
+      "organization_sequence": {
+        "name": "Organization and Sequence",
+        "description": "Structure, pacing, and use of transitions",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Demonstrates strategic and purposeful organization.",
+            "Events follow a logical and engaging sequence with effective transitions and pacing."
+          ],
+          "3": [
+            "Shows clear organization and appropriate pacing.",
+            "Some transitions used effectively."
+          ],
+          "2": [
+            "Inconsistent structure or pacing.",
+            "Some transitions present but flow may be choppy."
+          ],
+          "1": [
+            "Disorganized or unclear sequence of events.",
+            "Transitions missing or ineffective."
+          ]
+        }
       },
-      "style": {
-        "name": "Style",
-        "max_points": 3,
-        "description": "Effective use of language and literary devices"
+      "language_conventions": {
+        "name": "Language, Voice, and Conventions",
+        "description": "Style, tone, grammar, and mechanics",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Uses descriptive, vivid language and a consistent narrative voice.",
+            "Sentence structures vary naturally.",
+            "Few to no grammar or spelling errors."
+          ],
+          "3": [
+            "Language is clear and appropriate, with some variation and control of tone.",
+            "Minor errors do not interfere with understanding."
+          ],
+          "2": [
+            "Basic or inconsistent language.",
+            "Some issues with tone, clarity, or grammar that affect fluency."
+          ],
+          "1": [
+            "Frequent grammar, usage, or style issues.",
+            "Voice may be flat or inappropriate.",
+            "Errors hinder understanding."
+          ]
+        }
       }
     }
   },
-  "expository": {
-    "description": "Expository Essay Rubric",
-    "full_text": "This rubric evaluates expository essays based on thesis, support, organization, and clarity.",
+  "SBAC Explanatory 6-11": {
+    "name": "SBAC Explanatory Rubric (Grades 6-11)",
+    "total_points": 10,
     "categories": {
-      "thesis": {
-        "name": "Thesis",
+      "organization_purpose": {
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Clear and effective structure",
+            "Strong thesis/controlling idea",
+            "Consistent and purposeful focus",
+            "Effective use of transitions",
+            "Logical progression with strong connections"
+          ],
+          "3": [
+            "Evident structure and completeness",
+            "Clear thesis, mostly maintained focus",
+            "Adequate transitions with some variety",
+            "Adequate introduction, conclusion, and flow"
+          ],
+          "2": [
+            "Inconsistent structure with loose connections",
+            "Vague or weak thesis",
+            "Inconsistent transitions or weak intro/conclusion",
+            "Uneven progression of ideas"
+          ],
+          "1": [
+            "Little or no discernible structure",
+            "Confusing or missing thesis",
+            "Few or no transitions",
+            "Unclear progression, randomly ordered ideas"
+          ],
+          "NS": [
+            "Insufficient (e.g., copied text)",
+            "In a language other than English",
+            "Off-topic",
+            "Off-purpose"
+          ]
+        }
+      },
+      "evidence_elaboration": {
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Thorough elaboration of evidence",
+            "Effective use of source material with clear citations",
+            "Precise language and comprehensive details",
+            "Effective elaborative techniques and style",
+            "Vocabulary appropriate for audience and purpose"
+          ],
+          "3": [
+            "Adequate elaboration and relevant evidence",
+            "General but appropriate citations and details",
+            "Mix of precise and general language",
+            "Generally appropriate vocabulary and style"
+          ],
+          "2": [
+            "Uneven elaboration or imprecise evidence",
+            "Weak or inconsistent citations",
+            "Repetitive or vague language",
+            "Weak elaborative techniques",
+            "Underdeveloped ideas"
+          ],
+          "1": [
+            "Minimal or irrelevant evidence",
+            "Little or no elaboration",
+            "Minimal or incorrect use of source material",
+            "Limited or ineffective vocabulary",
+            "Little evidence of style or clarity"
+          ],
+          "NS": [
+            "Insufficient (e.g., copied text)",
+            "In a language other than English",
+            "Off-topic",
+            "Off-purpose"
+          ]
+        }
+      },
+      "conventions": {
         "max_points": 2,
-        "description": "Clear and focused thesis statement"
+        "criteria": {
+          "2": [
+            "Adequate command of conventions",
+            "Correct sentence formation, punctuation, grammar, and spelling"
+          ],
+          "1": [
+            "Partial command of conventions",
+            "Limited accuracy in sentence formation and mechanics"
+          ],
+          "0": [
+            "Little or no command of conventions",
+            "Frequent and severe errors in mechanics"
+          ],
+          "NS": [
+            "Insufficient (e.g., copied text)",
+            "In a language other than English",
+            "Off-topic",
+            "Off-purpose"
+          ]
+        },
+        "special_notes": [
+          "Do not factor spacing and alignment as that may be due to file upload issues",
+          "Ignore fragmented presentation or alignment concerns in scoring"
+        ]
+      }
+    }
+  },
+  "WHIT_Middle_School_Rubric_argumentative_explanatory": {
+    "name": "WHIT Argumentative/Explanatory Rubric (Grades 6-8)",
+    "total_points": 16,
+    "categories": {
+      "clear_focus_claim": {
+        "name": "🧠 Clear Focus or Claim",
+        "description": "Strength and clarity of the main idea or thesis.",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Clear and focused claim or main idea, strongly maintained throughout."
+          ],
+          "3": [
+            "Clear claim or focus, mostly maintained."
+          ],
+          "2": [
+            "Unclear or weak claim, inconsistently maintained."
+          ],
+          "1": [
+            "Lacks a clear main idea or argument; may be off-topic or confusing."
+          ]
+        }
       },
-      "support": {
-        "name": "Support",
-        "max_points": 3,
-        "description": "Strong supporting evidence and examples"
+      "supporting_evidence": {
+        "name": "📚 Supporting Ideas and Evidence",
+        "description": "Quality and relevance of details, examples, and explanations.",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Strong, relevant evidence and thoughtful explanations. May include counterclaims or well-chosen examples."
+          ],
+          "3": [
+            "Sufficient evidence and explanation. Some reasoning is present."
+          ],
+          "2": [
+            "Limited or weak evidence. Some ideas repeated or unclear."
+          ],
+          "1": [
+            "Little or no supporting evidence. Writing is vague or unsupported."
+          ]
+        }
       },
-      "organization": {
-        "name": "Organization",
-        "max_points": 2,
-        "description": "Logical structure and clear transitions"
+      "organization_flow": {
+        "name": "🧭 Organization and Flow",
+        "description": "Structure, transitions, and progression of ideas.",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Logical structure with clear intro, body, and conclusion. Smooth transitions."
+          ],
+          "3": [
+            "Mostly organized and easy to follow. Some transitions used."
+          ],
+          "2": [
+            "Some organization but jumps between ideas. Limited transitions."
+          ],
+          "1": [
+            "Disorganized or hard to follow. No clear structure."
+          ]
+        }
       },
-      "clarity": {
-        "name": "Clarity",
-        "max_points": 3,
-        "description": "Clear explanations and effective use of language"
+      "language_conventions": {
+        "name": "✍️ Language, Style, and Conventions",
+        "description": "Grammar, sentence fluency, word choice, and tone.",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Strong word choice, sentence variety, mostly error-free. Tone fits purpose."
+          ],
+          "3": [
+            "Generally clear with few errors. Some sentence variety. Appropriate tone."
+          ],
+          "2": [
+            "Frequent errors or repetitive sentence structure. Tone may be off."
+          ],
+          "1": [
+            "Major errors or unclear writing throughout. Hard to understand."
+          ]
+        }
+      }
+    }
+  },
+  "WHIT Narrative Rubric (Grades 6-8)": {
+    "name": "WHIT Narrative Rubric (Grades 6-8)",
+    "total_points": 16,
+    "rows": {
+      "focus_purpose": {
+        "name": "Focus and Purpose",
+        "description": "How clearly the narrative establishes and maintains a purpose or theme.",
+        "max_points": 4,
+        "criteria": {
+          "4": [
+            "Narrative focus is clear and engaging throughout.",
+            "The purpose or theme is thoughtfully developed."
+           ],
+         "3": [
+              "Focus is mostly clear with some sense of purpose.",
+              "Theme is present and mostly consistent."
+            ],
+            "2": [
+              "Focus may be vague or shift during the piece.",
+              "Theme or purpose is underdeveloped."
+            ],
+            "1": [
+              "No clear focus or theme is evident.",
+              "Writing may be off-topic or confusing."
+            ]
+          }
+        },
+        "character_plot_setting": {
+          "name": "Characters, Plot & Setting",
+          "description": "How well the writer builds the world of the story.",
+          "max_points": 4,
+          "criteria": {
+            "4": [
+              "Characters, setting, and events are well-developed and connected.",
+              "Plot shows logical progression and creative details."
+            ],
+            "3": [
+              "Basic development of characters, setting, and plot.",
+              "Events mostly make sense and connect."
+            ],
+            "2": [
+              "Some parts underdeveloped or unclear.",
+              "Plot may be disjointed or rushed."
+            ],
+            "1": [
+              "Characters, setting, or events are confusing or missing.",
+              "Narrative structure is unclear."
+            ]
+          }
+        },
+        "organization_sequence": {
+          "name": "Organization & Sequence",
+          "description": "How well the story flows from beginning to end.",
+          "max_points": 4,
+          "criteria": {
+            "4": [
+              "Clear structure with strong sequencing and transitions.",
+              "Pacing fits the story and holds interest."
+            ],
+            "3": [
+              "Structure is mostly logical with some transitions.",
+              "Pacing is generally appropriate."
+            ],
+            "2": [
+              "Inconsistent structure or weak transitions.",
+              "Some parts may feel rushed or drag."
+            ],
+            "1": [
+              "Disorganized or confusing flow.",
+              "Events may not follow a logical order."
+            ]
+          }
+        },
+        "language_conventions": {
+          "name": "Language & Conventions",
+          "description": "Use of language, grammar, sentence variety, and mechanics.",
+          "max_points": 4,
+          "criteria": {
+            "4": [
+              "Strong, vivid language and well-controlled sentences.",
+              "Very few errors in grammar or spelling."
+            ],
+            "3": [
+              "Language is clear with some variety.",
+              "Minor errors do not affect understanding."
+            ],
+            "2": [
+              "Simple or repetitive language.",
+              "Several errors may impact readability."
+            ],
+            "1": [
+              "Frequent grammar or spelling errors.",
+              "Language is unclear or distracting."
+            ]
+          }
+        }
       }
     }
   }
 }
+  
