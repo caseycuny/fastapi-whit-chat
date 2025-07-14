@@ -23,7 +23,9 @@ from .schemas import (
     CachedDebateInsightsRequest,
     DebateInsightsResponse,
     GenerateDebateInsightsResponse,
-    CachedDebateInsightsResponse
+    CachedDebateInsightsResponse,
+    ExitTicketAnalysisRequest,
+    ExitTicketAnalysisResponse
 )
 from .utils import extract_json_from_response
 from asgiref.sync import sync_to_async
@@ -1802,6 +1804,202 @@ async def websocket_rhetorical_device_practice(websocket: WebSocket):
         print(f"[DEBUG] WebSocket error: {e}")
         await websocket.close()
 
+@app.websocket("/ws/whit_chat")
+async def websocket_whit_chat(websocket: WebSocket):
+    await websocket.accept()
+    thread_id = None
+    teacher_assistant_id = os.getenv("TEACHER_CHAT_BUDDY_ID")
+    
+    if not teacher_assistant_id:
+        await websocket.send_json({
+            "type": "error", 
+            "data": {"message": "TEACHER_CHAT_BUDDY_ID not configured"}
+        })
+        await websocket.close()
+        return
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            msg_type = msg.get("type")
+            data = msg.get("data", {})
+            
+            if msg_type == "init":
+                assignment_id = data.get("assignment_id")
+                assistant_id = data.get("assistant_id") or teacher_assistant_id
+                user_message = data.get("message")
+                
+                # Create thread
+                thread = await client.beta.threads.create()
+                thread_id = thread.id
+                
+                # Fetch submission feedback from DB (recreate db session for websocket)
+                db = SessionLocal()
+                try:
+                    context_text = "No assignment context available."
+                    if assignment_id:
+                        submission_data = await get_submission_focus_data(assignment_id, db)
+                        if submission_data:
+                            context_text = (
+                                f"Here is the metrics summary for the assignment:\n{submission_data['metrics_summary']}\n\n"
+                                f"Here is the submission feedback data for all students:\n{submission_data['students']}"
+                            )
+                        else:
+                            context_text = "No submission feedback available."
+                finally:
+                    db.close()
+                
+                # Combine context and user's question
+                if user_message:
+                    combined_message = f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}\n\n{user_message}"
+                else:
+                    combined_message = f"Using this submission feedback data, collaborate as a thought partner and assistant with the teacher.\n{context_text}"
+                
+                # Add message to thread
+                await client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role="user",
+                    content=combined_message
+                )
+                
+                # Stream the response
+                response_stream = await client.beta.threads.runs.create(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    stream=True
+                )
+                
+                full_message = ""
+                async for chunk in response_stream:
+                    if (
+                        hasattr(chunk, 'data') and
+                        hasattr(chunk.data, 'delta') and
+                        hasattr(chunk.data.delta, 'content') and
+                        chunk.data.delta.content is not None
+                    ):
+                        token = chunk.data.delta.content
+                        if isinstance(token, list):
+                            parts = []
+                            for content_block in token:
+                                if hasattr(content_block, 'text') and hasattr(content_block.text, 'value') and content_block.text.value is not None:
+                                    parts.append(str(content_block.text.value))
+                                elif hasattr(content_block, 'text') and isinstance(content_block.text, str):
+                                    parts.append(content_block.text)
+                                elif hasattr(content_block, 'value') and content_block.value is not None:
+                                    parts.append(str(content_block.value))
+                                elif isinstance(content_block, str):
+                                    parts.append(content_block)
+                                else:
+                                    parts.append(str(content_block))
+                            token = ''.join(parts)
+                        
+                        full_message += token
+                        await websocket.send_json({
+                            "type": "token",
+                            "data": {"content": token}
+                        })
+                
+                # Send final message with thread_id
+                await websocket.send_json({
+                    "type": "message",
+                    "data": {
+                        "thread_id": thread_id,
+                        "content": full_message,
+                        "history": [
+                            {"role": "user", "text": user_message} if user_message else None,
+                            {"role": "assistant", "text": full_message}
+                        ]
+                    }
+                })
+                
+            elif msg_type == "message":
+                if not thread_id:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "data": {"message": "Chat not initialized"}
+                    })
+                    continue
+                
+                user_message = data.get("message")
+                assistant_id = data.get("assistant_id") or teacher_assistant_id
+                
+                if not user_message:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "data": {"message": "Missing message content"}
+                    })
+                    continue
+                
+                # Add user message to thread
+                await client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role="user",
+                    content=user_message
+                )
+                
+                # Stream the response
+                response_stream = await client.beta.threads.runs.create(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    stream=True
+                )
+                
+                full_message = ""
+                async for chunk in response_stream:
+                    if (
+                        hasattr(chunk, 'data') and
+                        hasattr(chunk.data, 'delta') and
+                        hasattr(chunk.data.delta, 'content') and
+                        chunk.data.delta.content is not None
+                    ):
+                        token = chunk.data.delta.content
+                        if isinstance(token, list):
+                            parts = []
+                            for content_block in token:
+                                if hasattr(content_block, 'text') and hasattr(content_block.text, 'value') and content_block.text.value is not None:
+                                    parts.append(str(content_block.text.value))
+                                elif hasattr(content_block, 'text') and isinstance(content_block.text, str):
+                                    parts.append(content_block.text)
+                                elif hasattr(content_block, 'value') and content_block.value is not None:
+                                    parts.append(str(content_block.value))
+                                elif isinstance(content_block, str):
+                                    parts.append(content_block)
+                                else:
+                                    parts.append(str(content_block))
+                            token = ''.join(parts)
+                        
+                        full_message += token
+                        await websocket.send_json({
+                            "type": "token",
+                            "data": {"content": token}
+                        })
+                
+                # Send final message
+                await websocket.send_json({
+                    "type": "message",
+                    "data": {"content": full_message}
+                })
+                
+            elif msg_type == "end":
+                await websocket.close()
+                break
+                
+            else:
+                await websocket.send_json({
+                    "type": "error", 
+                    "data": {"message": f"Unknown message type: {msg_type}"}
+                })
+                
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        if websocket.application_state == WebSocketState.CONNECTED:
+            await websocket.send_json({"type": "error", "data": {"message": str(e)}})
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
 async def debate_analysis_api(transcript: list) -> dict:
     """
     Calls OpenAI Assistant for debate analysis, handles tool call, and returns validated output.
@@ -2632,7 +2830,8 @@ You MUST use the provided tool 'generate_classwide_debate_insights' and return O
 {{
   "student_notes_summary": "Summary of student notes to teacher about their key takeaways",
   "general_observations": "Broader observations about class debate skills, trends in argumentation, rhetorical devices, persuasive appeals, and critical thinking levels",
-  "teaching_recommendations": "Specific, actionable teaching recommendations in bullet format addressing identified patterns"
+  "teaching_recommendations": "Specific, actionable teaching recommendations in bullet format addressing identified patterns",
+  "socratic_seminar_questions": ["question1", "question2", "question3", "question4", "question5", "question6", "question7"]
 }}
 
 Focus on:
@@ -2642,6 +2841,7 @@ Focus on:
 - Bloom's taxonomy distribution and critical thinking levels
 - Areas where students excel vs. areas needing improvement
 - Specific instructional strategies to address gaps
+- Generate 7 thought-provoking Socratic seminar questions based on the debate topics and themes that emerged from the class debates
 
 Provide insights that are practical, specific, and immediately actionable for a teacher planning their next lessons.
 """
@@ -2745,7 +2945,7 @@ async def get_cached_debate_insights(class_id: int, assignment_id: int, db: Sess
         
         # Query the ClasswideDebateData table for existing insights
         result = db.execute(text("""
-            SELECT student_notes_summary, general_observations, teaching_recommendations
+            SELECT student_notes_summary, general_observations, teaching_recommendations, socratic_seminar_questions
             FROM jarvis_app_classwidedebatedata 
             WHERE class_instance_id = :class_id AND assignment_id = :assignment_id
             LIMIT 1
@@ -2755,10 +2955,12 @@ async def get_cached_debate_insights(class_id: int, assignment_id: int, db: Sess
         
         if row and row.student_notes_summary and row.general_observations and row.teaching_recommendations:
             # We have cached insights
+            socratic_questions = row.socratic_seminar_questions if row.socratic_seminar_questions else []
             insights = DebateInsightsResponse(
                 student_notes_summary=row.student_notes_summary,
                 general_observations=row.general_observations,
-                teaching_recommendations=row.teaching_recommendations
+                teaching_recommendations=row.teaching_recommendations,
+                socratic_seminar_questions=socratic_questions
             )
             
             return CachedDebateInsightsResponse(
@@ -2847,7 +3049,8 @@ async def generate_debate_insights(request: GenerateDebateInsightsRequest, db: S
         insights = DebateInsightsResponse(
             student_notes_summary=insights_data["student_notes_summary"],
             general_observations=insights_data["general_observations"],
-            teaching_recommendations=insights_data["teaching_recommendations"]
+            teaching_recommendations=insights_data["teaching_recommendations"],
+            socratic_seminar_questions=insights_data.get("socratic_seminar_questions", [])
         )
         
         return GenerateDebateInsightsResponse(
@@ -3790,6 +3993,251 @@ class FRQ3PromptResponse(BaseModel):
     prompts: Optional[List[Dict[str, str]]] = None
     message: Optional[str] = None
 
+async def exit_ticket_analysis_api(student_answer: str, question: str, correct_answer: str) -> dict:
+    """
+    Calls OpenAI Assistant for exit ticket analysis, handles tool call, and returns validated output.
+    """
+    logger.info("🚀 Starting exit_ticket_analysis_api")
+    logger.info(f"📝 Student answer: {student_answer}")
+    logger.info(f"❓ Question: {question}")
+    logger.info(f"✅ Correct answer: {correct_answer}")
+    
+    assistant_id = os.getenv("EXIT_TICKET_STUDENT_ID")
+    logger.info(f"🤖 Assistant ID: {assistant_id}")
+    if not assistant_id:
+        raise HTTPException(status_code=500, detail="EXIT_TICKET_STUDENT_ID not set in environment variables.")
+
+    # Compose prompt for exit ticket analysis
+    prompt = f"""
+You are an expert educator analyzing a student's exit ticket response. You MUST use the analyze_exit_ticket tool function to provide structured analysis. Do NOT respond with plain text.
+
+Question: {question}
+
+Expected/Correct Answer: {correct_answer}
+
+Student's Answer: {student_answer}
+
+REQUIRED: Call the analyze_exit_ticket function with these exact parameters:
+- correct: boolean (true/false)
+- misconception_analysis: string 
+- misconception_type: string
+- conceptual_vs_procedural: string (must be "conceptual", "procedural", "both", or "not_applicable")
+- intervention_suggestion: string
+- error_severity: string (must be "minor", "moderate", "major", or "not_applicable")
+
+You MUST use the tool function. Do not provide analysis as plain text.
+"""
+
+    # Create thread and send message
+    logger.info("📝 Creating thread and sending message...")
+    thread = await client.beta.threads.create()
+    logger.info(f"🧵 Thread created: {thread.id}")
+    await client.beta.threads.messages.create(
+        thread_id=thread.id,
+        role="user",
+        content=prompt
+    )
+    logger.info("✅ Message sent to thread")
+
+    # Start run with tool choice
+    logger.info("🏃 Starting run with tool choice...")
+    run = await client.beta.threads.runs.create(
+        thread_id=thread.id,
+        assistant_id=assistant_id,
+        tool_choice={"type": "function", "function": {"name": "analyze_exit_ticket"}},
+        tools=[{"type": "function", "function": {"name": "analyze_exit_ticket"}}]
+    )
+    logger.info(f"🏃 Run created: {run.id}")
+
+    # Wait for completion and handle tool call
+    logger.info("⏳ Waiting for completion and handling tool calls...")
+    start_time = datetime.now()
+    timeout_seconds = 120
+    while True:
+        run_status = await client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+        logger.info(f"📊 Run status: {run_status.status}")
+        if run_status.status == 'requires_action':
+            logger.info("🔧 Run requires action - processing tool calls...")
+            tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            logger.info(f"🔧 Processing {len(tool_calls)} tool calls")
+            tool_outputs = []
+            for tc in tool_calls:
+                logger.info(f"🛠️ Tool call: {tc.function.name}")
+                logger.info(f"📝 Tool arguments: {tc.function.arguments}")
+                
+                # Parse the tool arguments (this is what the Assistant wants to call the tool with)
+                try:
+                    tool_args = json.loads(tc.function.arguments)
+                    logger.info(f"✅ Parsed tool arguments: {tool_args}")
+                    
+                    # For analyze_exit_ticket, we should return the analysis result
+                    # The Assistant has already done the analysis and provided it in the arguments
+                    tool_output = json.dumps(tool_args)  # Return the analysis as JSON
+                    logger.info(f"📤 Tool output: {tool_output}")
+                    
+                    tool_outputs.append({
+                        "tool_call_id": tc.id,
+                        "output": tool_output
+                    })
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Failed to parse tool arguments: {e}")
+                    tool_outputs.append({
+                        "tool_call_id": tc.id,
+                        "output": tc.function.arguments  # Fallback to raw arguments
+                    })
+            run = await client.beta.threads.runs.submit_tool_outputs(
+                thread_id=thread.id,
+                run_id=run.id,
+                tool_outputs=tool_outputs
+            )
+            continue
+        elif run_status.status == 'completed':
+            break
+        elif run_status.status in ['failed', 'cancelled', 'expired']:
+            raise HTTPException(status_code=500, detail=f"Run {run_status.status}")
+        if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+            await client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+            raise HTTPException(status_code=504, detail="Request timed out")
+        await asyncio.sleep(1)
+
+    # Fetch thread messages and extract tool call output from assistant's message
+    logger.info("📨 Fetching messages to extract tool call output...")
+    messages = await client.beta.threads.messages.list(thread_id=thread.id)
+    logger.info(f"📬 Found {len(messages.data)} messages")
+    
+    for i, msg in enumerate(messages.data):
+        logger.info(f"📝 Message {i}: role={msg.role}, content_count={len(msg.content)}")
+        if msg.role == 'assistant':
+            logger.info(f"🤖 Processing assistant message {i}")
+            for j, content in enumerate(msg.content):
+                content_type = getattr(content, 'type', None)
+                logger.info(f"   Content {j}: type={content_type}")
+                
+                if content_type == 'tool_calls':
+                    logger.info("🔧 Found tool_calls content!")
+                    tool_calls = getattr(content, 'tool_calls', [])
+                    logger.info(f"   Tool calls count: {len(tool_calls)}")
+                    for k, tool_call in enumerate(tool_calls):
+                        tool_name = getattr(tool_call.function, 'name', None)
+                        logger.info(f"   Tool call {k}: name={tool_name}")
+                        if tool_name == "analyze_exit_ticket":
+                            logger.info("✅ Found matching analyze_exit_ticket tool call!")
+                            arguments = tool_call.function.arguments
+                            logger.info(f"🔍 Raw tool call arguments: {arguments}")
+                            try:
+                                result = json.loads(arguments)
+                                logger.info(f"✅ Extracted tool call result: {result}")
+                                return result
+                            except json.JSONDecodeError as e:
+                                logger.error(f"❌ Tool call JSON decode error: {e}")
+                                continue
+                
+                elif content_type == 'text':
+                    logger.info(f"📄 Found text content: {content.text.value[:200]}...")
+            
+            # Fallback: try to parse text as JSON if tool_calls not found
+            logger.info("🔄 Trying fallback: parsing text content as JSON...")
+            for content in msg.content:
+                if getattr(content, 'type', None) == 'text':
+                    try:
+                        result = json.loads(content.text.value)
+                        logger.info(f"✅ Parsed text as JSON: {result}")
+                        return result
+                    except Exception as e:
+                        logger.info(f"⚠️ Text content not valid JSON: {e}")
+                        continue
+    
+    logger.error("❌ No valid tool call output found in any assistant message")
+    raise HTTPException(status_code=500, detail="No valid tool call output found in assistant's message.")
+
+@app.post("/analyze-exit-ticket/", response_model=ExitTicketAnalysisResponse)
+async def analyze_exit_ticket(request: ExitTicketAnalysisRequest):
+    """
+    Analyze a student's exit ticket response and provide educational insights.
+    """
+    try:
+        logger.info(f"Analyzing exit ticket response for student {request.student_id}")
+        
+        # Validate required fields
+        if not request.student_answer or not request.student_answer.strip():
+            raise HTTPException(status_code=400, detail="Student answer is required")
+        if not request.question or not request.question.strip():
+            raise HTTPException(status_code=400, detail="Question is required")
+        if not request.correct_answer or not request.correct_answer.strip():
+            raise HTTPException(status_code=400, detail="Correct answer is required")
+        
+        # Analyze with retry logic
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🎯 Exit ticket analysis attempt {attempt + 1}")
+                analysis_data = await exit_ticket_analysis_api(
+                    request.student_answer,
+                    request.question,
+                    request.correct_answer
+                )
+                logger.info(f"✅ Raw analysis_data received: {analysis_data}")
+                logger.info(f"📊 Data type: {type(analysis_data)}")
+                
+                # Validate the response structure
+                if not isinstance(analysis_data, dict):
+                    raise ValueError("Analysis response is not a dictionary")
+                
+                required_fields = [
+                    "correct", "misconception_analysis", "misconception_type",
+                    "conceptual_vs_procedural", "intervention_suggestion", "error_severity"
+                ]
+                logger.info(f"🔍 Checking required fields in analysis_data...")
+                missing_fields = []
+                for field in required_fields:
+                    if field not in analysis_data:
+                        missing_fields.append(field)
+                        logger.error(f"❌ Missing field: {field}")
+                    else:
+                        logger.info(f"✅ Found field: {field} = {analysis_data[field]}")
+                
+                if missing_fields:
+                    raise ValueError(f"Missing required fields: {missing_fields}")
+                
+                # Return validated response
+                return ExitTicketAnalysisResponse(
+                    success=True,
+                    correct=analysis_data["correct"],
+                    misconception_analysis=analysis_data["misconception_analysis"],
+                    misconception_type=analysis_data["misconception_type"],
+                    conceptual_vs_procedural=analysis_data["conceptual_vs_procedural"],
+                    intervention_suggestion=analysis_data["intervention_suggestion"],
+                    error_severity=analysis_data["error_severity"],
+                    message="Successfully analyzed exit ticket response"
+                )
+                
+            except (ValueError, json.JSONDecodeError) as e:
+                logger.error(f"Analysis failed on attempt {attempt+1}: {e}")
+                if attempt == max_retries - 1:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Failed to get valid exit ticket analysis after {max_retries} attempts: {str(e)}"
+                    )
+                await asyncio.sleep(2)
+        
+        raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error in analyze_exit_ticket: {str(e)}")
+        return ExitTicketAnalysisResponse(
+            success=False,
+            correct=False,
+            misconception_analysis="",
+            misconception_type="",
+            conceptual_vs_procedural="",
+            intervention_suggestion="",
+            error_severity="",
+            message=f"Error analyzing exit ticket: {str(e)}"
+        )
+
 @app.post("/api/ap_lang_frq3_prompt_maker/", response_model=FRQ3PromptResponse)
 async def ap_lang_frq3_prompt_maker(request: FRQ3PromptRequest):
     """
@@ -3924,6 +4372,14 @@ Example format:
             prompts=None,
             message=f"Error generating prompts: {str(e)}"
         )
+
+class ExitTicketAnalysisRequest(BaseModel):
+    student_answer: str
+    question: str
+    correct_answer: str
+    assignment_id: int
+    student_id: int
+
 
 
 

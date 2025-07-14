@@ -487,6 +487,7 @@ class DebateInsightsResponse(BaseModel):
     student_notes_summary: str
     general_observations: str
     teaching_recommendations: str
+    socratic_seminar_questions: List[str]
 
 class GenerateDebateInsightsResponse(BaseModel):
     success: bool
@@ -497,4 +498,22 @@ class CachedDebateInsightsResponse(BaseModel):
     success: bool
     has_data: bool
     insights: Optional[DebateInsightsResponse] = None
+    message: Optional[str] = None
+
+# Exit Ticket Analysis Schemas
+class ExitTicketAnalysisRequest(BaseModel):
+    student_answer: str
+    question: str
+    correct_answer: str
+    assignment_id: int
+    student_id: int
+
+class ExitTicketAnalysisResponse(BaseModel):
+    success: bool
+    correct: bool
+    misconception_analysis: str
+    misconception_type: str
+    conceptual_vs_procedural: str
+    intervention_suggestion: str
+    error_severity: str
     message: Optional[str] = None 
