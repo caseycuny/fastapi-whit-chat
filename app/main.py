@@ -3396,6 +3396,12 @@ async def rhetorical_device_progress_analysis_api(thread_id: str) -> dict:
     analysis_messages = await client.beta.threads.messages.list(thread_id=analysis_thread.id)
     logger.info(f"Retrieved {len(analysis_messages.data)} messages from analysis thread")
     
+    # Log the complete raw response for debugging
+    logger.info("=== RAW GPT RESPONSE DEBUG ===")
+    for i, msg in enumerate(analysis_messages.data):
+        logger.info(f"RAW Message {i}: {msg}")
+    logger.info("=== END RAW RESPONSE DEBUG ===")
+    
     for i, msg in enumerate(analysis_messages.data):
         logger.info(f"Message {i}: role={msg.role}, content_count={len(msg.content) if msg.content else 0}")
         if msg.role == 'assistant':
@@ -3420,6 +3426,19 @@ async def rhetorical_device_progress_analysis_api(thread_id: str) -> dict:
                 elif getattr(content, 'type', None) == 'text':
                     text_value = getattr(content.text, 'value', 'no text value')
                     logger.info(f"Text content: {text_value[:200]}...")
+                    
+                    # Try to parse the text content as JSON (fallback)
+                    try:
+                        # Look for JSON-like content in the text
+                        text_content = text_value.strip()
+                        if text_content.startswith('{') and text_content.endswith('}'):
+                            logger.info("Attempting to parse text content as JSON")
+                            result = json.loads(text_content)
+                            logger.info(f"Successfully parsed JSON from text content: {result}")
+                            return result
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse text content as JSON: {e}")
+                        continue
     
     logger.error("No analysis result found in assistant messages")
     raise HTTPException(status_code=500, detail="No analysis result found")
