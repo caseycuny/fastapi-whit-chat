@@ -516,4 +516,98 @@ class ExitTicketAnalysisResponse(BaseModel):
     conceptual_vs_procedural: str
     intervention_suggestion: str
     error_severity: str
-    message: Optional[str] = None 
+    message: Optional[str] = None
+
+
+class ErrorSeverityDistribution(BaseModel):
+    minor: int = Field(..., description="Number of students with minor errors")
+    moderate: int = Field(..., description="Number of students with moderate errors")
+    major: int = Field(..., description="Number of students with major errors")
+
+
+class ConceptualProceduralBreakdown(BaseModel):
+    conceptual: int = Field(..., description="Number of students with conceptual errors")
+    procedural: int = Field(..., description="Number of students with procedural errors")
+    both: int = Field(..., description="Number of students with both conceptual and procedural errors")
+
+
+class InterventionNeed(BaseModel):
+    intervention_type: str = Field(..., description="Type of intervention needed")
+    student_count: int = Field(..., description="Number of students needing this intervention")
+
+
+class StudentGroupingByMisconception(BaseModel):
+    misconception_type: str = Field(..., description="The specific misconception type")
+    student_count: int = Field(..., description="Number of students with this misconception")
+
+
+class ExitTicketClasswideAnalysisData(BaseModel):
+    """
+    Pydantic model matching the OpenAI assistant schema for analyze_classwide_exit_tickets
+    """
+    mastery_percentage: float = Field(..., ge=0, le=100, description="Percentage of students who answered correctly (0-100)")
+    class_readiness: str = Field(..., description="Overall class readiness based on mastery percentage")
+    most_common_misconceptions: List[str] = Field(..., description="List of most common misconceptions ordered by frequency")
+    error_severity_distribution: ErrorSeverityDistribution = Field(..., description="Distribution of error severity")
+    conceptual_vs_procedural_breakdown: ConceptualProceduralBreakdown = Field(..., description="Breakdown of error types")
+    similar_intervention_needs: List[InterventionNeed] = Field(..., description="Groups of students with similar intervention needs")
+    priority_intervention_areas: List[str] = Field(..., description="Priority misconceptions to address first")
+    reteaching_focus: str = Field(..., description="Specific concepts to reteach to whole class")
+    clarity_issues: str = Field(..., description="Assessment of question clarity issues")
+    student_groupings_by_misconception: List[StudentGroupingByMisconception] = Field(..., description="Students grouped by misconception types")
+    success_indicators: str = Field(..., description="What successful students demonstrated")
+
+
+class ExitTicketClasswideRequest(BaseModel):
+    assignment_id: int = Field(..., description="Assignment ID for the exit ticket")
+
+
+class ExitTicketClasswideResponse(BaseModel):
+    success: bool
+    analysis: ExitTicketClasswideAnalysisData
+    total_responses: int = Field(..., description="Total number of student responses")
+    completion_rate: Optional[float] = Field(None, description="Percentage of students who completed")
+    message: Optional[str] = None
+
+# Mixed Groups Schemas
+class MixedGroupsRequest(BaseModel):
+    assignment_id: int = Field(..., description="Assignment ID to create mixed groups for")
+    class_id: Optional[int] = Field(None, description="Optional class ID for additional context")
+
+class MixedGroupStudent(BaseModel):
+    name: str = Field(..., description="Student's full name")
+    strength: str = Field(..., description="Key strength this student brings to the group")
+
+class MixedGroup(BaseModel):
+    group_number: int = Field(..., description="Group identifier (1, 2, 3, etc.)")
+    focus_area: str = Field(..., description="Primary learning focus for this group")
+    teaching_points: List[str] = Field(..., description="Specific teaching strategies for this group")
+    students: List[MixedGroupStudent] = Field(..., description="Students assigned to this group")
+    group_strategy: str = Field(..., description="Overall collaborative strategy for the group")
+
+class MixedGroupsResponse(BaseModel):
+    mixed_groups: List[MixedGroup] = Field(..., description="List of mixed ability groups")
+    
+    class Config:
+        extra = "forbid"
+        strict = True
+        json_schema_extra = {
+            "example": {
+                "mixed_groups": [
+                    {
+                        "group_number": 1,
+                        "focus_area": "Organization and Evidence Integration",
+                        "teaching_points": [
+                            "Strong organizers help those developing structure",
+                            "Evidence experts guide citation techniques"
+                        ],
+                        "students": [
+                            {"name": "Student A", "strength": "Excellent organization skills"},
+                            {"name": "Student B", "strength": "Strong evidence usage"},
+                            {"name": "Student C", "strength": "Developing writer eager to learn"}
+                        ],
+                        "group_strategy": "Peer mentoring with structured collaboration"
+                    }
+                ]
+            }
+        } 

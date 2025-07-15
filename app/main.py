@@ -25,7 +25,12 @@ from .schemas import (
     GenerateDebateInsightsResponse,
     CachedDebateInsightsResponse,
     ExitTicketAnalysisRequest,
-    ExitTicketAnalysisResponse
+    ExitTicketAnalysisResponse,
+    ExitTicketClasswideRequest,
+    ExitTicketClasswideResponse,
+    ExitTicketClasswideAnalysisData,
+    MixedGroupsRequest,
+    MixedGroupsResponse
 )
 from .utils import extract_json_from_response
 from asgiref.sync import sync_to_async
@@ -36,7 +41,7 @@ from pprint import pprint
 from sqlalchemy.orm import Session
 from .db import SessionLocal, Base, engine
 from sqlalchemy.orm import selectinload
-from .models import Submission, FeedbackCategory, NextInstructionalFocus, InstructionalBlindSpot, WritingPersona, CustomUser
+from .models import Submission, FeedbackCategory, NextInstructionalFocus, InstructionalBlindSpot, WritingPersona, CustomUser, CognitiveSkill
 import random, re
 from collections import defaultdict
 from sqlalchemy import text
@@ -3280,7 +3285,9 @@ async def rhetorical_device_progress_analysis_api(thread_id: str) -> dict:
     Uses OpenAI Assistant with function calling for consistent output format.
     """
     assistant_id = os.getenv("RHETORICAL_DEVICE_ANALYZER_ID")
+    logger.info(f"RHETORICAL_DEVICE_ANALYZER_ID: {assistant_id}")
     if not assistant_id:
+        logger.error("RHETORICAL_DEVICE_ANALYZER_ID environment variable not configured")
         raise HTTPException(status_code=500, detail="RHETORICAL_DEVICE_ANALYZER_ID not configured")
     
     # Get the conversation from the thread
@@ -3385,15 +3392,36 @@ async def rhetorical_device_progress_analysis_api(thread_id: str) -> dict:
         await asyncio.sleep(1)
     
     # Extract the analysis result
+    logger.info("Retrieving analysis messages from thread")
     analysis_messages = await client.beta.threads.messages.list(thread_id=analysis_thread.id)
-    for msg in analysis_messages.data:
-        if msg.role == 'assistant':
-            for content in msg.content:
-                if getattr(content, 'type', None) == 'tool_calls':
-                    for tool_call in getattr(content, 'tool_calls', []):
-                        if getattr(tool_call.function, 'name', None) == "rhetorical_device_analysis":
-                            return json.loads(tool_call.function.arguments)
+    logger.info(f"Retrieved {len(analysis_messages.data)} messages from analysis thread")
     
+    for i, msg in enumerate(analysis_messages.data):
+        logger.info(f"Message {i}: role={msg.role}, content_count={len(msg.content) if msg.content else 0}")
+        if msg.role == 'assistant':
+            logger.info(f"Processing assistant message {i}")
+            for j, content in enumerate(msg.content):
+                logger.info(f"Content {j}: type={getattr(content, 'type', 'unknown')}")
+                if getattr(content, 'type', None) == 'tool_calls':
+                    tool_calls = getattr(content, 'tool_calls', [])
+                    logger.info(f"Found {len(tool_calls)} tool calls")
+                    for k, tool_call in enumerate(tool_calls):
+                        logger.info(f"Tool call {k}: name={getattr(tool_call.function, 'name', 'unknown')}")
+                        if getattr(tool_call.function, 'name', None) == "rhetorical_device_analysis":
+                            try:
+                                logger.info(f"Raw tool call arguments: {tool_call.function.arguments}")
+                                result = json.loads(tool_call.function.arguments)
+                                logger.info(f"Successfully parsed analysis result: {result}")
+                                return result
+                            except json.JSONDecodeError as e:
+                                logger.error(f"Failed to parse tool call arguments as JSON: {e}")
+                                logger.error(f"Raw arguments were: {tool_call.function.arguments}")
+                                raise HTTPException(status_code=500, detail=f"Invalid JSON in analysis result: {str(e)}")
+                elif getattr(content, 'type', None) == 'text':
+                    text_value = getattr(content.text, 'value', 'no text value')
+                    logger.info(f"Text content: {text_value[:200]}...")
+    
+    logger.error("No analysis result found in assistant messages")
     raise HTTPException(status_code=500, detail="No analysis result found")
 
 @app.post("/api/rhetorical-device-progress/", response_model=RhetoricalDeviceProgressResponse)
@@ -3466,6 +3494,9 @@ async def _analyze_rhetorical_device_progress_impl(request: RhetoricalDeviceProg
         raise
     except Exception as e:
         logger.error(f"Error in analyze_rhetorical_device_progress: {str(e)}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return RhetoricalDeviceProgressResponse(
             success=False,
             devices_practiced=[],
@@ -4238,6 +4269,228 @@ async def analyze_exit_ticket(request: ExitTicketAnalysisRequest):
             message=f"Error analyzing exit ticket: {str(e)}"
         )
 
+
+@app.post("/exit_ticket_classwide_api/", response_model=ExitTicketClasswideResponse)
+async def exit_ticket_classwide_api(request: ExitTicketClasswideRequest, db: Session = Depends(get_db)):
+    """
+    Perform classwide analysis of exit ticket responses.
+    Collects individual AI analyses and generates class insights using EXIT_TICKET_CLASS_ID assistant.
+    """
+    try:
+        logger.info(f"Starting classwide exit ticket analysis for assignment {request.assignment_id}")
+        
+        # Get exit ticket data
+        exit_ticket_query = text("""
+            SELECT et.*, a.title as assignment_title, a.due_date
+            FROM jarvis_app_exitticket et
+            JOIN jarvis_app_assignment a ON et.assignment_id = a.id
+            WHERE a.id = :assignment_id
+        """)
+        
+        exit_ticket_result = db.execute(exit_ticket_query, {"assignment_id": request.assignment_id}).fetchone()
+        
+        if not exit_ticket_result:
+            raise HTTPException(status_code=404, detail="Exit ticket not found")
+        
+        # Get all student responses with AI analysis
+        responses_query = text("""
+            SELECT 
+                etr.response_text,
+                etr.selected_options,
+                etr.true_false_answer,
+                etr.ai_analysis,
+                etr.is_correct,
+                etr.submitted_at,
+                u.first_name,
+                u.last_name
+            FROM jarvis_app_exitticketresponse etr
+            JOIN jarvis_app_customuser u ON etr.student_id = u.id
+            WHERE etr.exit_ticket_id = :exit_ticket_id
+            ORDER BY etr.submitted_at DESC
+        """)
+        
+        responses = db.execute(responses_query, {"exit_ticket_id": exit_ticket_result.id}).fetchall()
+        
+        if not responses:
+            raise HTTPException(status_code=400, detail="No student responses found")
+        
+        logger.info(f"Found {len(responses)} student responses")
+        
+        # Prepare data for AI assistant
+        analysis_data = {
+            "assignment_title": exit_ticket_result.assignment_title,
+            "question": exit_ticket_result.question_text,
+            "correct_answer": exit_ticket_result.correct_answer,
+            "question_type": exit_ticket_result.question_type,
+            "total_responses": len(responses),
+            "individual_analyses": []
+        }
+        
+        # Process each response
+        for response in responses:
+            response_data = {
+                "student_name": f"{response.first_name} {response.last_name}",
+                "response_text": response.response_text or "",
+                "is_correct": response.is_correct,
+                "submitted_at": str(response.submitted_at) if response.submitted_at else ""
+            }
+            
+            # Include AI analysis if available
+            if response.ai_analysis:
+                response_data["ai_feedback"] = response.ai_analysis
+            
+            # Handle different question types
+            if exit_ticket_result.question_type == 'multiple_choice' and response.selected_options:
+                response_data["selected_options"] = response.selected_options
+            elif exit_ticket_result.question_type == 'true_false' and response.true_false_answer is not None:
+                response_data["true_false_answer"] = response.true_false_answer
+            
+            analysis_data["individual_analyses"].append(response_data)
+        
+        # Call EXIT_TICKET_CLASS_ID assistant
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        assistant_id = os.getenv("EXIT_TICKET_CLASS_ID")
+        
+        if not assistant_id:
+            raise HTTPException(status_code=500, detail="EXIT_TICKET_CLASS_ID assistant not configured")
+        
+        logger.info(f"Calling OpenAI assistant {assistant_id}")
+        
+        # Create proper prompt for the assistant
+        prompt = f"""You are a teaching assistant and co-teacher. Your job is to analyze the classwide exit ticket data and return your insights and analysis in exactly the format of the analyze_classwide_exit_tickets tool.
+
+Please analyze the following exit ticket data for the class and provide comprehensive insights for instructional planning:
+
+Assignment: {analysis_data['assignment_title']}
+Question: {analysis_data['question']}
+Total Students: {analysis_data['total_students']}
+Total Responses: {len(analysis_data['individual_analyses'])}
+
+Individual Student Analyses:
+{json.dumps(analysis_data['individual_analyses'], indent=2)}
+
+You MUST use the analyze_classwide_exit_tickets tool to provide your analysis. Focus on:
+1. Overall mastery percentage and class readiness
+2. Most common misconceptions across all students
+3. Error severity distribution (minor, moderate, major)
+4. Conceptual vs procedural error breakdown
+5. Similar intervention needs for grouping students
+6. Priority areas that need immediate attention
+7. Whole-class reteaching recommendations
+8. Question clarity issues if multiple students made similar errors
+9. Success indicators from students who got it right"""
+
+        # Create thread and message with error handling
+        try:
+            thread = client.beta.threads.create()
+            
+            message = client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=prompt
+            )
+            
+            # Create run with tool_choice to force using the tool
+            run = client.beta.threads.runs.create(
+                thread_id=thread.id,
+                assistant_id=assistant_id,
+                tool_choice={"type": "function", "function": {"name": "analyze_classwide_exit_tickets"}}
+            )
+        except Exception as e:
+            logger.error(f"OpenAI API error during setup: {str(e)}")
+            raise HTTPException(status_code=503, detail="AI service unavailable")
+        
+        # Poll for completion and handle tool outputs
+        max_wait = 300  # 5 minutes
+        start_time = time.time()
+        tool_output_json = None
+        
+        try:
+            while True:
+                if time.time() - start_time > max_wait:
+                    raise HTTPException(status_code=408, detail="AI analysis timeout")
+                
+                await asyncio.sleep(2)
+                run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+                logger.info(f"Run status: {run.status}")
+                
+                if run.status == 'requires_action':
+                    logger.info("🔧 Run requires action - processing tool calls...")
+                    tool_calls = run.status.required_action.submit_tool_outputs.tool_calls
+                    logger.info(f"🔧 Processing {len(tool_calls)} tool calls")
+                    
+                    tool_outputs = []
+                    for tc in tool_calls:
+                        logger.info(f"🛠️ Tool call: {tc.function.name}")
+                        
+                        if tc.function.name == "analyze_classwide_exit_tickets":
+                            # Store the analysis result
+                            tool_output_json = tc.function.arguments
+                            logger.info(f"📤 Tool analysis received: {tool_output_json[:200]}...")
+                            
+                            tool_outputs.append({
+                                "tool_call_id": tc.id,
+                                "output": tool_output_json
+                            })
+                    
+                    if tool_outputs:
+                        run = await client.beta.threads.runs.submit_tool_outputs(
+                            thread_id=thread.id,
+                            run_id=run.id,
+                            tool_outputs=tool_outputs
+                        )
+                        continue
+                        
+                elif run.status == 'completed':
+                    break
+                    
+                elif run.status in ['failed', 'cancelled', 'expired']:
+                    logger.error(f"Run failed with status: {run.status}")
+                    raise HTTPException(status_code=500, detail=f"AI analysis failed: {run.status}")
+                    
+        except Exception as e:
+            logger.error(f"OpenAI API error during polling: {str(e)}")
+            raise HTTPException(status_code=503, detail="AI service unavailable")
+        
+        if tool_output_json:
+            logger.info("✅ Tool output received, validating with Pydantic...")
+            
+            try:
+                # Parse and validate response using Pydantic
+                analysis_result = json.loads(tool_output_json)
+                validated_analysis = ExitTicketClasswideAnalysisData(**analysis_result)
+                
+                # Calculate additional metrics
+                correct_count = sum(1 for r in responses if r.is_correct)
+                completion_rate = len(responses) / analysis_data.get("total_students", len(responses)) if analysis_data.get("total_students") else None
+                
+                logger.info(f"✅ Analysis validated successfully - Mastery: {validated_analysis.mastery_percentage}%")
+                
+                return ExitTicketClasswideResponse(
+                    success=True,
+                    analysis=validated_analysis,
+                    total_responses=len(responses),
+                    completion_rate=completion_rate
+                )
+                
+            except (json.JSONDecodeError, ValidationError) as e:
+                logger.error(f"Invalid tool output format: {str(e)}")
+                logger.error(f"Raw tool output: {tool_output_json}")
+                raise HTTPException(status_code=422, detail=f"Invalid AI analysis format: {str(e)}")
+        
+        else:
+            logger.error("No tool output received from assistant")
+            raise HTTPException(status_code=500, detail="AI analysis failed: No tool output received")
+            
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error in exit_ticket_classwide_api: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error in classwide analysis: {str(e)}")
+
+
 @app.post("/api/ap_lang_frq3_prompt_maker/", response_model=FRQ3PromptResponse)
 async def ap_lang_frq3_prompt_maker(request: FRQ3PromptRequest):
     """
@@ -4372,6 +4625,271 @@ Example format:
             prompts=None,
             message=f"Error generating prompts: {str(e)}"
         )
+
+async def get_mixed_groups_data(assignment_id: int, db: Session) -> List[dict]:
+    """
+    Optimized query to fetch only the 5 essential models for mixed grouping:
+    1. FeedbackCategory - Rubric scores and detailed feedback
+    2. CognitiveSkill - Analysis, synthesis, evaluation skills  
+    3. InstructionalBlindSpot - Specific skill gaps
+    4. NextInstructionalFocus - Learning targets
+    5. WritingPersona - Learning style and approach
+    """
+    logger.info(f"Fetching mixed groups data for assignment {assignment_id}")
+    
+    # Efficient query with selective loading of only essential relationships
+    submissions = db.query(Submission).filter(
+        Submission.assignment_id == assignment_id
+    ).options(
+        selectinload(Submission.student)
+    ).all()
+    
+    logger.info(f"Found {len(submissions)} submissions for mixed groups analysis")
+    
+    student_data = []
+    for submission in submissions:
+        if not submission.student:
+            continue
+            
+        # 1. FeedbackCategory - Essential for rubric-based grouping
+        feedback_categories = db.query(FeedbackCategory).filter_by(
+            submission_id=submission.id
+        ).all()
+        
+        rubric_scores = {}
+        strengths = []
+        areas_for_improvement = []
+        
+        for cat in feedback_categories:
+            rubric_scores[cat.name] = cat.score
+            if cat.strengths:
+                strengths.extend(cat.strengths)
+            if cat.areas_for_improvement:
+                areas_for_improvement.extend(cat.areas_for_improvement)
+        
+        # 2. CognitiveSkill - Essential for collaborative grouping
+        cognitive_skill = db.query(CognitiveSkill).filter_by(
+            submission_id=submission.id
+        ).first()
+        
+        cognitive_skills = {}
+        if cognitive_skill:
+            cognitive_skills = {
+                "analysis": cognitive_skill.analysis,
+                "synthesis": cognitive_skill.synthesis,
+                "evaluation": cognitive_skill.evaluation
+            }
+        
+        # 3. InstructionalBlindSpot - Essential for targeted grouping
+        blind_spots = [
+            bs.blind_spot for bs in 
+            db.query(InstructionalBlindSpot).filter_by(submission_id=submission.id).all()
+        ]
+        
+        # 4. NextInstructionalFocus - Essential for learning targets
+        focus_areas = [
+            nif.focus for nif in 
+            db.query(NextInstructionalFocus).filter_by(submission_id=submission.id).all()
+        ]
+        
+        # 5. WritingPersona - Essential for learning style matching
+        writing_persona = db.query(WritingPersona).filter_by(
+            submission_id=submission.id
+        ).first()
+        
+        persona_info = {}
+        if writing_persona:
+            persona_info = {
+                "type": writing_persona.type,
+                "description": writing_persona.description
+            }
+        
+        # Compile optimized student data structure
+        student_info = {
+            "student_name": submission.student.get_full_name() if hasattr(submission.student, 'get_full_name') else f"{submission.student.first_name} {submission.student.last_name}",
+            "overall_score": submission.score,
+            "rubric_scores": rubric_scores,
+            "cognitive_skills": cognitive_skills,
+            "strengths": strengths[:3],  # Top 3 strengths to limit tokens
+            "areas_for_improvement": areas_for_improvement[:3],  # Top 3 areas to limit tokens
+            "instructional_blind_spots": blind_spots,
+            "focus_areas": focus_areas,
+            "writing_persona": persona_info
+        }
+        
+        student_data.append(student_info)
+    
+    logger.info(f"Compiled mixed groups data for {len(student_data)} students")
+    return student_data
+
+@app.post("/api/mixed-groups/create", response_model=dict)
+async def create_mixed_groups_endpoint(request: MixedGroupsRequest, db: Session = Depends(get_db)):
+    """
+    Create mixed ability groups using optimized student data and OpenAI assistant.
+    Follows robust patterns with tool calls, validation, and retry logic.
+    """
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            # Environment validation
+            if not os.getenv("OPENAI_API_KEY"):
+                raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set")
+            
+            assistant_id = os.getenv("TEACHING_ASSISTANT_ID")
+            if not assistant_id:
+                raise HTTPException(status_code=500, detail="TEACHING_ASSISTANT_ID not set")
+            
+            logger.info(f"Creating mixed groups for assignment {request.assignment_id}, attempt {attempt + 1}")
+            
+            # Get optimized student data (5 essential models only)
+            student_data = await get_mixed_groups_data(request.assignment_id, db)
+            
+            if not student_data:
+                raise HTTPException(
+                    status_code=404, 
+                    detail="No student submissions found for this assignment"
+                )
+            
+            if len(student_data) < 6:  # Need at least 6 students for 2 groups of 3
+                raise HTTPException(
+                    status_code=422, 
+                    detail="Need at least 6 student submissions to create mixed groups"
+                )
+            
+            # Create comprehensive prompt for mixed groups
+            prompt = f"""Please analyze the following student data and create mixed ability groups for collaborative learning. 
+
+REQUIREMENTS:
+- Create groups of 3-4 students each
+- Mix students with complementary strengths and learning needs
+- Focus on pairing stronger students with developing students
+- Consider cognitive skills, writing personas, and instructional needs
+- Ensure each group has diverse abilities for peer learning
+
+STUDENT DATA:
+{json.dumps(student_data, indent=2)}
+
+RESPONSE FORMAT: You MUST use the create_mixed_groups tool and return a JSON response with this exact structure:
+{{
+  "mixed_groups": [
+    {{
+      "group_number": 1,
+      "focus_area": "Primary learning focus area",
+      "teaching_points": ["Specific teaching strategy 1", "Specific teaching strategy 2"],
+      "students": [
+        {{"name": "Student Name", "strength": "Key strength they bring"}},
+        {{"name": "Student Name", "strength": "Key strength they bring"}}
+      ],
+      "group_strategy": "How this group should collaborate effectively"
+    }}
+  ]
+}}
+
+Create balanced groups that maximize peer learning opportunities."""
+
+            # Create thread and run with tool choice
+            thread = await client.beta.threads.create()
+            await client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=prompt
+            )
+            
+            run = await client.beta.threads.runs.create(
+                thread_id=thread.id,
+                assistant_id=assistant_id,
+                tool_choice={"type": "function", "function": {"name": "create_mixed_groups"}},
+                tools=[{"type": "function", "function": {"name": "create_mixed_groups"}}]
+            )
+            
+            # Handle completion with timeout and tool calls
+            start_time = datetime.now()
+            timeout_seconds = 180
+            
+            while True:
+                run_status = await client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+                
+                if run_status.status == 'requires_action':
+                    # Handle tool calls
+                    tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+                    tool_outputs = []
+                    for tc in tool_calls:
+                        if tc.function.name == "create_mixed_groups":
+                            tool_outputs.append({
+                                "tool_call_id": tc.id,
+                                "output": tc.function.arguments
+                            })
+                    
+                    await client.beta.threads.runs.submit_tool_outputs(
+                        thread_id=thread.id,
+                        run_id=run.id,
+                        tool_outputs=tool_outputs
+                    )
+                    continue
+                    
+                elif run_status.status == 'completed':
+                    break
+                elif run_status.status in ['failed', 'cancelled', 'expired']:
+                    raise HTTPException(status_code=500, detail=f"OpenAI run {run_status.status}")
+                
+                if (datetime.now() - start_time).total_seconds() > timeout_seconds:
+                    await client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+                    raise HTTPException(status_code=504, detail="Request timed out")
+                
+                await asyncio.sleep(1)
+            
+            # Extract response from tool calls
+            messages = await client.beta.threads.messages.list(thread_id=thread.id)
+            response_data = None
+            
+            for msg in messages.data:
+                if msg.role == 'assistant':
+                    for content in msg.content:
+                        if getattr(content, 'type', None) == 'tool_calls':
+                            for tool_call in getattr(content, 'tool_calls', []):
+                                if getattr(tool_call.function, 'name', None) == "create_mixed_groups":
+                                    response_data = json.loads(tool_call.function.arguments)
+                                    break
+                        # Fallback to text parsing
+                        elif getattr(content, 'type', None) == 'text' and not response_data:
+                            try:
+                                json_str = extract_json_from_response(content.text.value)
+                                response_data = json.loads(json_str)
+                            except Exception:
+                                continue
+            
+            if not response_data:
+                raise ValueError("No valid response found from OpenAI assistant")
+            
+            # Validate response structure
+            try:
+                validated = MixedGroupsResponse(**response_data)
+                logger.info(f"Successfully created {len(validated.mixed_groups)} mixed groups")
+                return {"success": True, "response": response_data}
+                
+            except ValidationError as ve:
+                raise ValueError(f"Response validation failed: {str(ve)}")
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions immediately
+            raise
+            
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Validation/parsing failed on attempt {attempt + 1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Failed to create valid mixed groups after {max_retries} attempts: {str(e)}"
+                )
+            await asyncio.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"Error on attempt {attempt + 1}: {e}")
+            if attempt == max_retries - 1:
+                raise HTTPException(status_code=500, detail=f"Failed to create mixed groups: {str(e)}")
+            await asyncio.sleep(1)
+    
+    raise HTTPException(status_code=500, detail="Unexpected error in validation loop")
 
 class ExitTicketAnalysisRequest(BaseModel):
     student_answer: str

@@ -255,4 +255,12 @@ class WritingPersona(Base):
     type = Column(String)
     description = Column(String)
 
+class CognitiveSkill(Base):
+    __tablename__ = "jarvis_app_cognitiveskill"
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey("jarvis_app_submission.id"))
+    analysis = Column(String)
+    synthesis = Column(String)
+    evaluation = Column(String)
+
 # Add more models as needed for your FastAPI use cases, following the same pattern.
