@@ -281,3 +281,42 @@ class Thread(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_activity_at = Column(DateTime, default=datetime.utcnow)
+
+class ExitTicketClasswideAnalysis(Base):
+    __tablename__ = "jarvis_app_exitticketclasswideanalysis"
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
+    
+    # Core metrics
+    mastery_percentage = Column(Float)
+    class_readiness = Column(String(50))
+    
+    # Misconceptions and errors
+    most_common_misconceptions = Column(JSON, default=list)
+    
+    # Error severity distribution
+    error_severity_minor = Column(Integer, default=0)
+    error_severity_moderate = Column(Integer, default=0)
+    error_severity_major = Column(Integer, default=0)
+    
+    # Conceptual vs procedural breakdown
+    conceptual_errors = Column(Integer, default=0)
+    procedural_errors = Column(Integer, default=0)
+    both_error_types = Column(Integer, default=0)
+    
+    # Intervention needs
+    similar_intervention_needs = Column(JSON, default=list)
+    priority_intervention_areas = Column(JSON, default=list)
+    
+    # Teaching recommendations
+    reteaching_focus = Column(Text)
+    clarity_issues = Column(Text)
+    success_indicators = Column(Text)
+    
+    # Student groupings
+    student_groupings_by_misconception = Column(JSON, default=list)
+    
+    # Analysis metadata
+    thread_id = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

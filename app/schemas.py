@@ -567,6 +567,7 @@ class ExitTicketClasswideResponse(BaseModel):
     analysis: ExitTicketClasswideAnalysisData
     total_responses: int = Field(..., description="Total number of student responses")
     completion_rate: Optional[float] = Field(None, description="Percentage of students who completed")
+    thread_id: Optional[str] = Field(None, description="OpenAI thread ID for chat continuation")
     message: Optional[str] = None
 
 # Mixed Groups Schemas

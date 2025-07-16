@@ -41,7 +41,7 @@ from pprint import pprint
 from sqlalchemy.orm import Session
 from .db import SessionLocal, Base, engine
 from sqlalchemy.orm import selectinload
-from .models import Submission, FeedbackCategory, NextInstructionalFocus, InstructionalBlindSpot, WritingPersona, CustomUser, CognitiveSkill, Thread
+from .models import Submission, FeedbackCategory, NextInstructionalFocus, InstructionalBlindSpot, WritingPersona, CustomUser, CognitiveSkill, Thread, ExitTicketClasswideAnalysis
 import random, re
 from collections import defaultdict
 from sqlalchemy import text
@@ -1658,6 +1658,9 @@ async def websocket_debate(websocket: WebSocket):
 
 @app.websocket("/ws/rhetorical-device-practice")
 async def websocket_rhetorical_device_practice(websocket: WebSocket):
+    import asyncio
+    from openai import OpenAIError, RateLimitError, APIError
+    
     print("[DEBUG] WebSocket connection attempt received for /ws/rhetorical-device-practice")
     await websocket.accept()
     thread_id = None
@@ -1668,16 +1671,37 @@ async def websocket_rhetorical_device_practice(websocket: WebSocket):
         print("[DEBUG] RHETORICAL_DEVICE_TUTOR_ID not configured")
         await websocket.send_json({
             "type": "error", 
-            "data": {"message": "RHETORICAL_DEVICE_TUTOR_ID not configured"}
+            "data": {"message": "RHETORICAL_DEVICE_TUTOR_ID not configured", "fatal": True}
         })
         await websocket.close()
         return
 
+    async def retry_openai_request(request_func, max_retries=3, base_delay=1.0):
+        """Retry OpenAI requests with exponential backoff"""
+        for attempt in range(max_retries):
+            try:
+                return await request_func()
+            except RateLimitError as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"[DEBUG] Rate limit hit, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(delay)
+                    continue
+                raise e
+            except (APIError, OpenAIError) as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"[DEBUG] OpenAI error, retrying in {delay}s (attempt {attempt + 1}/{max_retries}): {e}")
+                    await asyncio.sleep(delay)
+                    continue
+                raise e
+        
     try:
         while True:
             data = await websocket.receive_json()
             print(f"[DEBUG] Received data: {data}")
             msg_type = data.get("type")
+            
             if msg_type == "init":
                 # Extract data from the nested structure
                 init_data = data.get("data", {})
@@ -1687,50 +1711,67 @@ async def websocket_rhetorical_device_practice(websocket: WebSocket):
                 if not last_debate_topic:
                     await websocket.send_json({
                         "type": "error", 
-                        "data": {"message": "Missing last debate topic"}
+                        "data": {"message": "Missing last debate topic", "fatal": False}
                     })
                     continue
                 
-                # Create thread
-                thread = await client.beta.threads.create()
-                thread_id = thread.id
-                
-                # Create initial system message but don't run the assistant yet
-                system_message = (
-                    f"You are a rhetorical device tutor helping a student practice using different rhetorical techniques. "
-                    f"The student's last debate topic was: '{last_debate_topic}'. "
-                    f"When the student tells you which rhetorical device they want to practice, immediately jump into teaching that specific device. "
-                    f"Provide a clear definition, give an example related to their debate topic, and then ask them to create their own example. "
-                    f"Do not give a generic introduction or list all devices unless they ask for options. "
-                    f"Ask questions in your last two sentences to help guide their thinking and get them started on crafting a sentence using the device. "
-                    f"Be encouraging and provide specific feedback on their attempts. "
-                    f"***MODEL OUTPUT EXAMPLE: "
-                    f"User: I want to learn about Anaphora "
-                    f"GPT: Excellent choice! "
-                    f"Anaphora is a rhetorical device that involves repeating the same word or phrase at the beginning of successive clauses or sentences. This creates emphasis and can make your argument more memorable and persuasive. "
-                    f"Example related to your debate topic: "
-                    f"Lincoln inspired a divided nation. Lincoln confronted the horrors of slavery. Lincoln redefined what freedom meant for every American. "
-                    f"Now, it's your turn! Try writing two or three sentences about Lincoln that begin with the same word or phrase to emphasize your point. "
-                    f"What word would impact the audience in an anaphora style? What point or ideal do you want to emphasize or add importance to? "
-                )
-                
-                await client.beta.threads.messages.create(
-                    thread_id=thread_id,
-                    role="user",
-                    content=system_message
-                )
-                
-                # Just send thread_id back to client - don't run the assistant yet
-                await websocket.send_json({
-                    "type": "thread_created",
-                    "data": {"thread_id": thread_id}
-                })
+                try:
+                    # Create thread with retry logic
+                    thread = await retry_openai_request(
+                        lambda: client.beta.threads.create()
+                    )
+                    thread_id = thread.id
+                    
+                    # Create initial system message but don't run the assistant yet
+                    system_message = (
+                        f"You are a rhetorical device tutor helping a student practice using different rhetorical techniques. "
+                        f"The student's last debate topic was: '{last_debate_topic}'. "
+                        f"When the student tells you which rhetorical device they want to practice, immediately jump into teaching that specific device. "
+                        f"Provide a clear definition, give an example related to their debate topic, and then ask them to create their own example. "
+                        f"Do not give a generic introduction or list all devices unless they ask for options. "
+                        f"Ask questions in your last two sentences to help guide their thinking and get them started on crafting a sentence using the device. "
+                        f"Be encouraging and provide specific feedback on their attempts. "
+                        f"***MODEL OUTPUT EXAMPLE: "
+                        f"User: I want to learn about Anaphora "
+                        f"GPT: Excellent choice! "
+                        f"Anaphora is a rhetorical device that involves repeating the same word or phrase at the beginning of successive clauses or sentences. This creates emphasis and can make your argument more memorable and persuasive. "
+                        f"Example related to your debate topic: "
+                        f"Lincoln inspired a divided nation. Lincoln confronted the horrors of slavery. Lincoln redefined what freedom meant for every American. "
+                        f"Now, it's your turn! Try writing two or three sentences about Lincoln that begin with the same word or phrase to emphasize your point. "
+                        f"What word would impact the audience in an anaphora style? What point or ideal do you want to emphasize or add importance to? "
+                    )
+                    
+                    await retry_openai_request(
+                        lambda: client.beta.threads.messages.create(
+                            thread_id=thread_id,
+                            role="user",
+                            content=system_message
+                        )
+                    )
+                    
+                    # Just send thread_id back to client - don't run the assistant yet
+                    await websocket.send_json({
+                        "type": "thread_created",
+                        "data": {"thread_id": thread_id}
+                    })
+                    
+                except Exception as e:
+                    print(f"[DEBUG] Error during init: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "data": {
+                            "message": "Failed to initialize conversation. Please try again.",
+                            "fatal": False,
+                            "retry": True
+                        }
+                    })
+                    continue
 
             elif msg_type == "message":
                 if not thread_id:
                     await websocket.send_json({
                         "type": "error", 
-                        "data": {"message": "Session not initialized"}
+                        "data": {"message": "Session not initialized", "fatal": False}
                     })
                     continue
                 
@@ -1740,60 +1781,78 @@ async def websocket_rhetorical_device_practice(websocket: WebSocket):
                 if not user_message:
                     await websocket.send_json({
                         "type": "error", 
-                        "data": {"message": "Missing message content"}
+                        "data": {"message": "Missing message content", "fatal": False}
                     })
                     continue
                 
-                # Add user message to thread
-                await client.beta.threads.messages.create(
-                    thread_id=thread_id,
-                    role="user",
-                    content=user_message
-                )
-                
-                # Stream the response
-                response_stream = await client.beta.threads.runs.create(
-                    thread_id=thread_id,
-                    assistant_id=assistant_id,
-                    stream=True
-                )
-                
-                full_message = ""
-                async for chunk in response_stream:
-                    if (hasattr(chunk, 'data') and 
-                        hasattr(chunk.data, 'delta') and 
-                        hasattr(chunk.data.delta, 'content')):
-                        
-                        token = chunk.data.delta.content
-                        if isinstance(token, list):
-                            parts = []
-                            for content_block in token:
-                                if (hasattr(content_block, 'text') and 
-                                    hasattr(content_block.text, 'value') and 
-                                    content_block.text.value is not None):
-                                    parts.append(str(content_block.text.value))
-                                elif (hasattr(content_block, 'text') and 
-                                      isinstance(content_block.text, str)):
-                                    parts.append(content_block.text)
-                                elif (hasattr(content_block, 'value') and 
-                                      content_block.value is not None):
-                                    parts.append(str(content_block.value))
-                                elif isinstance(content_block, str):
-                                    parts.append(content_block)
-                                else:
-                                    parts.append(str(content_block))
-                            token = ''.join(parts)
-                        
-                        full_message += token
-                        await websocket.send_json({
-                            "type": "token",
-                            "data": {"role": "assistant", "content": token}
-                        })
-                
-                await websocket.send_json({
-                    "type": "message",
-                    "data": {"role": "assistant", "content": full_message}
-                })
+                try:
+                    # Add user message to thread with retry
+                    await retry_openai_request(
+                        lambda: client.beta.threads.messages.create(
+                            thread_id=thread_id,
+                            role="user",
+                            content=user_message
+                        )
+                    )
+                    
+                    # Stream the response with retry
+                    response_stream = await retry_openai_request(
+                        lambda: client.beta.threads.runs.create(
+                            thread_id=thread_id,
+                            assistant_id=assistant_id,
+                            stream=True
+                        )
+                    )
+                    
+                    full_message = ""
+                    async for chunk in response_stream:
+                        if (hasattr(chunk, 'data') and 
+                            hasattr(chunk.data, 'delta') and 
+                            hasattr(chunk.data.delta, 'content')):
+                            
+                            token = chunk.data.delta.content
+                            if isinstance(token, list):
+                                parts = []
+                                for content_block in token:
+                                    if (hasattr(content_block, 'text') and 
+                                        hasattr(content_block.text, 'value') and 
+                                        content_block.text.value is not None):
+                                        parts.append(str(content_block.text.value))
+                                    elif (hasattr(content_block, 'text') and 
+                                          isinstance(content_block.text, str)):
+                                        parts.append(content_block.text)
+                                    elif (hasattr(content_block, 'value') and 
+                                          content_block.value is not None):
+                                        parts.append(str(content_block.value))
+                                    elif isinstance(content_block, str):
+                                        parts.append(content_block)
+                                    else:
+                                        parts.append(str(content_block))
+                                token = ''.join(parts)
+                            
+                            full_message += token
+                            await websocket.send_json({
+                                "type": "token",
+                                "data": {"role": "assistant", "content": token}
+                            })
+                    
+                    await websocket.send_json({
+                        "type": "message",
+                        "data": {"role": "assistant", "content": full_message}
+                    })
+                    
+                except Exception as e:
+                    print(f"[DEBUG] Error during message processing: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "data": {
+                            "message": "Failed to process your message. Please try sending it again.",
+                            "fatal": False,
+                            "retry": True,
+                            "last_message": user_message
+                        }
+                    })
+                    continue
 
             elif msg_type == "end":
                 await websocket.close()
@@ -1802,11 +1861,18 @@ async def websocket_rhetorical_device_practice(websocket: WebSocket):
             else:
                 await websocket.send_json({
                     "type": "error", 
-                    "data": {"message": f"Unknown message type: {msg_type}"}
+                    "data": {"message": f"Unknown message type: {msg_type}", "fatal": False}
                 })
                 
     except Exception as e:
         print(f"[DEBUG] WebSocket error: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "data": {
+                "message": "Connection error occurred. Please close and reopen the conversation.",
+                "fatal": True
+            }
+        })
         await websocket.close()
 
 @app.websocket("/ws/whit_chat")
@@ -2127,6 +2193,159 @@ async def websocket_essay_chat(websocket: WebSocket, submission_id: int):
             await websocket.close()
         except Exception:
             pass
+
+
+@app.websocket("/ws/exit-ticket-analysis/{thread_id}")
+async def websocket_exit_ticket_analysis_chat(websocket: WebSocket, thread_id: str):
+    """WebSocket endpoint for exit ticket analysis chat using OpenAI thread_id"""
+    await websocket.accept()
+    
+    try:
+        # Get database session
+        db = SessionLocal()
+        
+        try:
+            # Get the analysis record to verify the thread exists
+            analysis = db.query(ExitTicketClasswideAnalysis).filter(
+                ExitTicketClasswideAnalysis.thread_id == thread_id
+            ).first()
+            
+            if not analysis:
+                await websocket.send_json({
+                    "type": "error",
+                    "data": {"message": "No analysis found for this thread"}
+                })
+                return
+            
+            # Use the EXIT_TICKET_CLASS_ID assistant
+            assistant_id = os.getenv("EXIT_TICKET_CLASS_ID")
+            if not assistant_id:
+                await websocket.send_json({
+                    "type": "error",
+                    "data": {"message": "EXIT_TICKET_CLASS_ID assistant not configured"}
+                })
+                return
+            
+            # Send initial context message
+            await websocket.send_json({
+                "type": "init",
+                "data": {
+                    "message": f"Ready to discuss the exit ticket analysis for {analysis.assignment.title}",
+                    "thread_id": thread_id,
+                    "assistant_id": assistant_id
+                }
+            })
+            
+            # Main chat loop
+            while True:
+                try:
+                    msg = await websocket.receive_json()
+                    msg_type = msg.get("type")
+                    
+                    if msg_type == "init":
+                        # Handle initial prompt from frontend
+                        init_message = msg.get("message", "")
+                        if init_message.strip():
+                            # Add initial message to thread
+                            await client.beta.threads.messages.create(
+                                thread_id=thread_id,
+                                role="user",
+                                content=init_message
+                            )
+                            
+                            # Create and run with streaming
+                            run = await client.beta.threads.runs.create(
+                                thread_id=thread_id,
+                                assistant_id=assistant_id,
+                                stream=True
+                            )
+                            
+                            # Stream the response
+                            response_text = ""
+                            async for event in run:
+                                if event.event == "thread.message.delta":
+                                    delta = event.data.delta
+                                    if delta.content:
+                                        for content in delta.content:
+                                            if content.type == "text":
+                                                token = content.text.value
+                                                response_text += token
+                                                await websocket.send_json({
+                                                    "type": "token",
+                                                    "data": {"content": token}
+                                                })
+                                elif event.event == "thread.run.completed":
+                                    await websocket.send_json({
+                                        "type": "message",
+                                        "data": {"content": response_text}
+                                    })
+                                    break
+                                    
+                    elif msg_type == "message":
+                        user_message = msg.get("message", "")
+                        if not user_message.strip():
+                            continue
+                        
+                        # Add user message to thread
+                        await client.beta.threads.messages.create(
+                            thread_id=thread_id,
+                            role="user",
+                            content=user_message
+                        )
+                        
+                        # Create and run with streaming
+                        run = await client.beta.threads.runs.create(
+                            thread_id=thread_id,
+                            assistant_id=assistant_id,
+                            stream=True
+                        )
+                        
+                        # Stream the response
+                        response_text = ""
+                        async for event in run:
+                            if event.event == "thread.message.delta":
+                                delta = event.data.delta
+                                if delta.content:
+                                    for content in delta.content:
+                                        if content.type == "text":
+                                            token = content.text.value
+                                            response_text += token
+                                            await websocket.send_json({
+                                                "type": "token",
+                                                "data": {"content": token}
+                                            })
+                            elif event.event == "thread.run.completed":
+                                await websocket.send_json({
+                                    "type": "message",
+                                    "data": {"content": response_text}
+                                })
+                                break
+                        
+                except WebSocketDisconnect:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in exit ticket analysis chat: {str(e)}")
+                    if websocket.application_state == WebSocketState.CONNECTED:
+                        await websocket.send_json({
+                            "type": "error",
+                            "data": {"message": str(e)}
+                        })
+                    
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Error in exit ticket analysis chat websocket: {str(e)}")
+        if websocket.application_state == WebSocketState.CONNECTED:
+            await websocket.send_json({
+                "type": "error",
+                "data": {"message": str(e)}
+            })
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
 
 async def debate_analysis_api(transcript: list) -> dict:
     """
@@ -4612,7 +4831,8 @@ You MUST use the analyze_classwide_exit_tickets tool to provide your analysis. F
                     success=True,
                     analysis=validated_analysis,
                     total_responses=len(responses),
-                    completion_rate=completion_rate
+                    completion_rate=completion_rate,
+                    thread_id=thread.id
                 )
                 
             except (json.JSONDecodeError, ValidationError) as e:
