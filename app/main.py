@@ -41,7 +41,7 @@ from pprint import pprint
 from sqlalchemy.orm import Session
 from .db import SessionLocal, Base, engine
 from sqlalchemy.orm import selectinload
-from .models import Submission, FeedbackCategory, NextInstructionalFocus, InstructionalBlindSpot, WritingPersona, CustomUser, CognitiveSkill
+from .models import Submission, FeedbackCategory, NextInstructionalFocus, InstructionalBlindSpot, WritingPersona, CustomUser, CognitiveSkill, Thread
 import random, re
 from collections import defaultdict
 from sqlalchemy import text
@@ -2000,6 +2000,129 @@ async def websocket_whit_chat(websocket: WebSocket):
     except Exception as e:
         if websocket.application_state == WebSocketState.CONNECTED:
             await websocket.send_json({"type": "error", "data": {"message": str(e)}})
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+@app.websocket("/ws/essay-chat/{submission_id}")
+async def websocket_essay_chat(websocket: WebSocket, submission_id: int):
+    """WebSocket endpoint for essay-specific chat using saved thread_id and assistant_id"""
+    await websocket.accept()
+    
+    try:
+        # Get database session
+        db = SessionLocal()
+        
+        try:
+            # Get thread info for this submission
+            thread = db.query(Thread).filter(
+                Thread.submission_id == submission_id,
+                Thread.thread_type == 'essay_analysis',
+                Thread.is_active == True
+            ).first()
+            
+            if not thread:
+                await websocket.send_json({
+                    "type": "error",
+                    "data": {"message": "No chat thread found for this submission"}
+                })
+                return
+            
+            thread_id = thread.openai_thread_id
+            assistant_id = thread.assistant_id
+            
+            # Get submission details for context
+            submission = db.query(Submission).filter(Submission.id == submission_id).first()
+            if not submission:
+                await websocket.send_json({
+                    "type": "error",
+                    "data": {"message": "Submission not found"}
+                })
+                return
+            
+            # Send initial context message
+            await websocket.send_json({
+                "type": "init",
+                "data": {
+                    "message": f"Ready to chat about your essay: {submission.assignment.title}",
+                    "thread_id": thread_id,
+                    "assistant_id": assistant_id
+                }
+            })
+            
+            # Main chat loop
+            while True:
+                try:
+                    msg = await websocket.receive_json()
+                    msg_type = msg.get("type")
+                    data = msg.get("data", {})
+                    
+                    if msg_type == "chat":
+                        user_message = data.get("message", "")
+                        if not user_message.strip():
+                            continue
+                        
+                        # Add user message to thread
+                        await client.beta.threads.messages.create(
+                            thread_id=thread_id,
+                            role="user",
+                            content=user_message
+                        )
+                        
+                        # Create and run with streaming
+                        run = await client.beta.threads.runs.create(
+                            thread_id=thread_id,
+                            assistant_id=assistant_id,
+                            stream=True
+                        )
+                        
+                        # Stream the response
+                        response_text = ""
+                        async for event in run:
+                            if event.event == "thread.message.delta":
+                                delta = event.data.delta
+                                if delta.content:
+                                    for content in delta.content:
+                                        if content.type == "text":
+                                            token = content.text.value
+                                            response_text += token
+                                            await websocket.send_json({
+                                                "type": "token",
+                                                "data": {"content": token}
+                                            })
+                            elif event.event == "thread.run.completed":
+                                await websocket.send_json({
+                                    "type": "message",
+                                    "data": {"content": response_text}
+                                })
+                                break
+                        
+                        # Update thread activity
+                        thread.last_activity_at = datetime.utcnow()
+                        db.commit()
+                        
+                except WebSocketDisconnect:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in essay chat: {str(e)}")
+                    if websocket.application_state == WebSocketState.CONNECTED:
+                        await websocket.send_json({
+                            "type": "error",
+                            "data": {"message": str(e)}
+                        })
+                    break
+                    
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Error in essay chat websocket: {str(e)}")
+        if websocket.application_state == WebSocketState.CONNECTED:
+            await websocket.send_json({
+                "type": "error",
+                "data": {"message": str(e)}
+            })
         try:
             await websocket.close()
         except Exception:

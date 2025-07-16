@@ -264,3 +264,20 @@ class CognitiveSkill(Base):
     evaluation = Column(String)
 
 # Add more models as needed for your FastAPI use cases, following the same pattern.
+
+class Thread(Base):
+    __tablename__ = "jarvis_app_thread"
+    id = Column(Integer, primary_key=True, index=True)
+    openai_thread_id = Column(String, unique=True, index=True)
+    thread_type = Column(String)
+    title = Column(String)
+    user_id = Column(Integer, ForeignKey("jarvis_app_customuser.id"))
+    assignment_id = Column(Integer, ForeignKey("jarvis_app_assignment.id"))
+    submission_id = Column(Integer, ForeignKey("jarvis_app_submission.id"))
+    class_instance_id = Column(Integer, ForeignKey("jarvis_app_class.id"))
+    is_active = Column(Boolean, default=True)
+    assistant_id = Column(String)
+    thread_metadata = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_activity_at = Column(DateTime, default=datetime.utcnow)
