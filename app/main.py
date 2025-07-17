@@ -4642,7 +4642,7 @@ async def exit_ticket_classwide_api(request: ExitTicketClasswideRequest, db: Ses
         
         # Get exit ticket data
         exit_ticket_query = text("""
-            SELECT et.*, a.title as assignment_title, a.due_date
+            SELECT et.*, a.title as assignment_title, a.due_date, a.class_instance_id
             FROM jarvis_app_exitticket et
             JOIN jarvis_app_assignment a ON et.assignment_id = a.id
             WHERE a.id = :assignment_id
@@ -4652,6 +4652,16 @@ async def exit_ticket_classwide_api(request: ExitTicketClasswideRequest, db: Ses
         
         if not exit_ticket_result:
             raise HTTPException(status_code=404, detail="Exit ticket not found")
+        
+        # Get total students in the class
+        total_students_query = text("""
+            SELECT COUNT(*) as total_students
+            FROM jarvis_app_class_students
+            WHERE class_id = :class_instance_id
+        """)
+        
+        total_students_result = db.execute(total_students_query, {"class_instance_id": exit_ticket_result.class_instance_id}).fetchone()
+        total_students = total_students_result.total_students if total_students_result else 0
         
         # Get all student responses with AI analysis
         responses_query = text("""
@@ -4684,6 +4694,7 @@ async def exit_ticket_classwide_api(request: ExitTicketClasswideRequest, db: Ses
             "correct_answer": exit_ticket_result.correct_answer,
             "question_type": exit_ticket_result.question_type,
             "total_responses": len(responses),
+            "total_students": total_students,
             "individual_analyses": []
         }
         
