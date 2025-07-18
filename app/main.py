@@ -4099,20 +4099,25 @@ async def handle_ap_lang_argument(request: FRQRequest) -> dict:
             request.prompt
         )
         
-        # Return the analysis data directly without wrapper
-        analysis_data = analysis_result["data"]
-        analysis_data["thread_id"] = analysis_result["thread_id"]
-        return analysis_data
+        return {
+            "success": True,
+            "subject": request.subject,
+            "data": analysis_result["data"],
+            "thread_id": analysis_result["thread_id"],
+            "message": "Successfully analyzed AP Language - Argumentative essay"
+        }
         
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
         logger.error(f"Error in handle_ap_lang_argument: {str(e)}")
-        # Return error in a simple format
         return {
-            "error": f"Error analyzing essay: {str(e)}",
-            "success": False
+            "success": False,
+            "subject": request.subject,
+            "data": None,
+            "thread_id": None,
+            "message": f"Error analyzing essay: {str(e)}"
         }
 
 async def handle_ap_lang_rhetorical(request: FRQRequest) -> dict:
@@ -4197,18 +4202,19 @@ async def submit_frq(request: FRQRequest):
                 detail=f"Unsupported subject: {request.subject}. Supported subjects: ap_lang_argument, ap_lang_rhetorical, apush_dbq, ap_psych"
             )
         
-        # Return the result directly since it's no longer wrapped
-        return result
+        return FRQResponse(**result)
         
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
         logger.error(f"Error in submit_frq: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Unexpected error: {str(e)}"
-        }
+        return FRQResponse(
+            success=False,
+            subject=request.subject,
+            data=None,
+            message=f"Unexpected error: {str(e)}"
+        )
 
 async def ap_lang_rhetorical_analysis_api(essay_text: str, prompt: str) -> dict:
     """
